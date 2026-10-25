@@ -6,13 +6,14 @@
 'use strict';
 const PVS = 0.1, SIZE = 500, HALF = 250, CELL = 10, NC = SIZE / CELL;
 // materiais
-const LEAF = 1, TRUNK = 2, WALL = 3, TILE = 4, HAY = 5, WOOD = 6, STONE = 7, FLOOR = 8, RUBBLE = 9, THATCH = 10, SAND = 11, METAL = 12, GLASS = 13, RUBBER = 14, DIRT = 15, BRICK = 16;
+const LEAF = 1, TRUNK = 2, WALL = 3, TILE = 4, HAY = 5, WOOD = 6, STONE = 7, FLOOR = 8, RUBBLE = 9, THATCH = 10, SAND = 11, METAL = 12, GLASS = 13, RUBBER = 14, DIRT = 15, BRICK = 16, CLOTH = 17;
 // mm de penetração perdidos por metro atravessado, convertidos para cada voxel
-const RES_M = [0, 1.2, 48, 80, 12, 4, 16, 90, 8, 60, 6, 120, 30, 2, 20, 50, 85];
+const RES_M = [0, 1.2, 48, 80, 12, 4, 16, 90, 8, 60, 6, 120, 30, 2, 20, 50, 85, 3];
 const RES = RES_M.map(v => v * PVS);
-const OPAC = [0, 0.03, 1, 1, 1, 1, 0.4, 0.45, 1, 1, 1, 1, 1, 0.1, 1, 1, 1];   // quanto cada voxel tapa a visão
-const SOFT = [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];              // folha e feno: miolo oco, não seguram a casa
-const BURN = [0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];              // o que pega fogo
+const OPAC = [0, 0.03, 1, 1, 1, 1, 0.4, 0.45, 1, 1, 1, 1, 1, 0.1, 1, 1, 1, 1];   // quanto cada voxel tapa a visão
+const SOFT = [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];              // folha e feno: miolo oco
+const BURN = [0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1];              // o que pega fogo (madeira, assoalho, palha, pano)
+const HARD = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0];              // alvenaria: o tanque passa bem devagar
 const RUBBLE_Z = 0.55;                                                       // altura a que a esteira amassa o entulho
 
 function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
@@ -36,10 +37,13 @@ const THEMES = {
 };
 
 // ---------------------------------------------------------------- grade de voxels de um objeto
+// LITE: o servidor não precisa das cores, só do material (gasta um quarto da memória)
+let LITE = false;
 function newProp(kind, x0, y0, nx, ny, nz) { const n = nx * ny * nz;
   if (n >= 1 << 20) throw new Error('objeto grande demais: ' + kind);
-  return { kind, x0, y0, z0: 0, nx, ny, nz, n, mat: new Uint8Array(n), cr: new Uint8Array(n), cg: new Uint8Array(n), cb: new Uint8Array(n) }; }
-function put(pr, i, j, k, m, c, jit, s) { const idx = (k * pr.ny + j) * pr.nx + i; pr.mat[idx] = m;
+  const C = () => LITE ? null : new Uint8Array(n);
+  return { kind, x0, y0, z0: 0, nx, ny, nz, n, mat: new Uint8Array(n), cr: C(), cg: C(), cb: C() }; }
+function put(pr, i, j, k, m, c, jit, s) { const idx = (k * pr.ny + j) * pr.nx + i; pr.mat[idx] = m; if (!pr.cr) return;
   const v = jit ? (h3(i, j, k, s || 1) - .5) * jit : 0; pr.cr[idx] = Math.max(0, Math.min(255, c[0] + v)); pr.cg[idx] = Math.max(0, Math.min(255, c[1] + v)); pr.cb[idx] = Math.max(0, Math.min(255, c[2] + v * 0.8)); }
 // tira o miolo de folhas e feno que ninguém vê
 function hollow(pr) { const { nx, ny, nz, mat } = pr; const kill = [];
@@ -54,13 +58,13 @@ function finish(pr) { const L = []; let solid = 0, top = 0;
   return pr; }
 // árvores iguais dividem a mesma grade até alguém mexer nelas
 function own(pr) { if (pr.shared) { pr.mat = pr.mat.slice(); pr.shared = false; } }
-function ownColors(pr) { if (pr.sharedCol) { pr.cr = pr.cr.slice(); pr.cg = pr.cg.slice(); pr.cb = pr.cb.slice(); pr.sharedCol = false; } }
+function ownColors(pr) { if (pr.sharedCol && pr.cr) { pr.cr = pr.cr.slice(); pr.cg = pr.cg.slice(); pr.cb = pr.cb.slice(); pr.sharedCol = false; } }
 function idxOf(pr, i, j, k) { return (k * pr.ny + j) * pr.nx + i; }
 
 // ---------------------------------------------------------------- árvores
 const TREE_T = {};
 function treeTemplate(type, variant) {
-  const key = type + variant; if (TREE_T[key]) return TREE_T[key];
+  const key = type + variant + (LITE ? 'L' : ''); if (TREE_T[key]) return TREE_T[key];
   const s = 9137 + variant * 7717 + type.length * 131, r = mulberry32(s);
   let tr, cr, crz, cz, top, leaf, bark;
   if (type === 'birch') { tr = 0.13; cr = 1.6 + r() * 0.6; crz = 2.7 + r() * 0.7; cz = 5.2 + r() * 1.0; top = cz + crz; leaf = [108, 150, 64]; bark = [226, 226, 216]; }
@@ -105,87 +109,256 @@ function instance(t, x, y, extra) {
   pr.bb = [pr.x0, pr.y0, pr.x0 + t.nx * PVS, pr.y0 + t.ny * PVS, t.bb[4]];
   return Object.assign(pr, extra); }
 
-// ---------------------------------------------------------------- casa
-function house(cx, cy, w, d, alongX, T, s) {
+// ---------------------------------------------------------------- casas e celeiros com cômodos, andares, móveis e janelas
+// Montada em voxels inteiros num sistema local (u ao longo da cumeeira, v atravessando) e girada no fim se precisar.
+// pr.nav guarda cômodos, portas, janelas e escadas em coordenadas do mundo (para tropas, no futuro);
+// pr.win guarda os vidros de cada janela, para estilhaçar a janela inteira de uma vez.
+const r2 = v => Math.round(v * 100) / 100;
+function building(cx, cy, W, D, alongX, front, T, s, barn) {
   const r = mulberry32(s), thatch = T.roofKind === 'thatch';
-  const W = alongX ? w : d, D = alongX ? d : w;              // W ao longo da cumeeira
-  const wh = 2.75, ha = D / 2 + 0.4, rh = D * (thatch ? 0.5 : 0.42), ex = W / 2, ey = D / 2, WT = 0.3, RT = thatch ? 0.4 : 0.2, gx = ex + (thatch ? 0.4 : 0.25);
-  const nx = Math.ceil((W + 1.0) / PVS), ny = Math.ceil((D + 1.0) / PVS), nz = Math.ceil((wh + rh + 1.4) / PVS);
-  const x0 = cx - nx * PVS / 2, y0 = cy - ny * PVS / 2;
-  const pr = newProp('house', x0, y0, nx, ny, nz);
-  const roofC = T.roof[(r() * T.roof.length) | 0], wallC = T.wall.map(v => v - r() * 16), shutC = T.shutter[(r() * T.shutter.length) | 0];
-  const woodC = [118, 90, 62], frameC = thatch ? shutC : [226, 222, 210], glassC = [58, 74, 88];
-  const door = (r() - 0.5) * (W - 3.2), chim = [(r() - 0.5) * W * 0.5, (r() < 0.5 ? -1 : 1) * 0.55];
-  const table = [(chim[0] > 0 ? -1 : 1) * W * 0.22, -chim[1] * 0.9];
-  pr.rubbleC = [wallC, roofC, woodC];
-  for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-    const pl = x0 + (i + .5) * PVS - cx, pa = y0 + (j + .5) * PVS - cy, pz = (k + .5) * PVS;  // ao longo, através, altura
-    const ap = Math.abs(pa), al = Math.abs(pl), n = h3(i, j, k, s);
-    const roofZ = wh + rh * (1 - ap / ha);
-    const inX = al <= ex, inY = ap <= ey;
-    // chaminé de tijolo, saindo do fogão
-    const inChim = Math.abs(pl - chim[0]) < 0.28 && Math.abs(pa - chim[1]) < 0.28;
-    if (inChim && pz > 1.6 && pz < roofZ + 0.75) { const row = Math.floor(pz / 0.1), brick = ((Math.floor((pl + pa + (row & 1) * 0.12) / 0.24)) & 1);
-      const c = pz > roofZ + 0.62 ? [70, 66, 62] : (pz * 10) % 1 < 0.2 ? [168, 160, 150] : brick ? [140, 74, 56] : [124, 66, 50];
-      put(pr, i, j, k, BRICK, c, 10, s); continue; }
-    // telhado
-    if (al <= gx && ap <= ha && pz <= roofZ && pz > roofZ - RT - (thatch && ap > ha - 0.3 ? 0.12 * n : 0)) {
-      let c;
-      if (thatch) { const strand = h3(Math.floor(pl / 0.07), 0, 0, s), course = ((ha - ap) / 0.42) % 1;
+  const nf = barn ? 1 : thatch ? (r() < 0.25 ? 2 : 1) : (r() < 0.6 ? 2 : 1), log = thatch && nf === 2 && !barn;
+  const WT = thatch && !log ? 3 : 4, IT = 2, ST = barn ? 34 : 28, wallK = nf * ST;
+  const Wn = Math.round(W / PVS), Dn = Math.round(D / PVS), Mg = 6, nu = Wn + 2 * Mg, nv = Dn + 2 * Mg;
+  const ha = Dn / 2 + 4, rh = Math.round(Dn * (thatch ? 0.5 : 0.42)), RT = thatch ? 4 : 2, ovU = thatch ? 4 : 3, nz = wallK + rh + 12;
+  const pr = newProp(barn ? 'barn' : 'house', cx - nu * PVS / 2, cy - nv * PVS / 2, nu, nv, nz), mat = pr.mat;
+  const U0 = Mg, U1 = Mg + Wn, V0 = Mg, V1 = Mg + Dn, iu0 = U0 + WT, iu1 = U1 - WT, iv0 = V0 + WT, iv1 = V1 - WT;
+  const pick = a => a[(r() * a.length) | 0];
+  const roofC = pick(T.roof), wallC = T.wall.map(v => v - r() * 16), shutC = pick(T.shutter), shutters = thatch || r() < 0.6;
+  const plaster = thatch ? [232, 226, 210] : [214, 206, 188], woodC = [118, 90, 62], frameC = thatch ? shutC : [226, 222, 210], glassC = [58, 74, 88], logC = [134, 100, 66];
+  const at = (i, j, k) => (k * nv + j) * nu + i;
+  const inG = (i, j, k) => i >= 0 && j >= 0 && k >= 0 && i < nu && j < nv && k < nz;
+  const set = (i, j, k, m, c, jit) => { if (inG(i, j, k)) { if (m) put(pr, i, j, k, m, c, jit === undefined ? 8 : jit, s); else mat[at(i, j, k)] = 0; } };
+  const box = (i0, i1, j0, j1, k0, k1, m, col, jit) => { for (let k = k0; k < k1; k++) for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) set(i, j, k, m, typeof col === 'function' ? col(i, j, k) : col, jit); };
+  const clear = (i0, i1, j0, j1, k0, k1) => box(i0, i1, j0, j1, k0, k1, 0);
+  const roofK = j => wallK + rh * (1 - Math.abs(j + .5 - nv / 2) / ha);          // altura do telhado (em voxels) na fileira j
+  const base = f => f === 0 ? 1 : f * ST, ceilK = f => f === nf - 1 ? wallK - 1 : (f + 1) * ST - 2;   // chão e teto livres de cada andar
+  // paredes externas: face 0 é v baixo, 1 v alto, 2 u baixo, 3 u alto; a = posição ao longo da face, t = camada de fora para dentro
+  const faceIJ = (face, a, t) => face === 0 ? [a, V0 + t] : face === 1 ? [a, V1 - 1 - t] : face === 2 ? [U0 + t, a] : [U1 - 1 - t, a];
+  const FN = [[0, -1], [0, 1], [-1, 0], [1, 0]], fFront = front > 0 ? 1 : 0, fBack = 1 - fFront;
+  const stone = (al, pz, quoin, bc) => { const rowH = 0.22, row = Math.floor(pz / rowH), off = h3(row, 0, 0, s) * 0.4, sl = 0.32 + 0.2 * h3(row, 1, 0, s);
+    const st = Math.floor((al + off) / sl), fu = ((al + off) / sl) % 1, fz = (pz / rowH) % 1;
+    return fu < 0.1 || fz < 0.14 ? [196, 188, 170] : mix(quoin ? [196, 186, 160] : bc, 0.82 + 0.26 * h3(row, st, 2, s)); };
+  const extCol = (a, t, k, dc) => { const pz = (k + .5) * PVS;
+    if (t === WT - 1 && k < wallK && !barn) return mix(plaster, 0.95 + 0.06 * h3(a >> 2, k >> 2, 7, s));
+    if (log) return dc < 2 && t === 0 ? [96, 72, 50] : mix(logC, (k % 2 ? 1 : 0.8) * (0.9 + 0.16 * h3(k >> 1, a >> 3, 3, s)));
+    if (thatch) { if (pz < 0.45) return pz > 0.4 ? [120, 94, 68] : [150, 118, 84]; return mix(wallC, 0.94 + 0.08 * vn3(a * PVS / 0.5, t, pz / 0.5, s)); }
+    return stone(a * PVS, pz, dc < 4, wallC); };
+  const WM = log ? WOOD : WALL;
+  for (let k = 0; k < wallK; k++) for (let j = V0; j < V1; j++) for (let i = U0; i < U1; i++) {
+    const tu = Math.min(i - U0, U1 - 1 - i), tv = Math.min(j - V0, V1 - 1 - j), t = Math.min(tu, tv); if (t >= WT) continue;
+    const gable = tu < tv; set(i, j, k, WM, extCol(gable ? j : i, t, k, gable ? tv : tu), thatch ? 8 : 10); }
+  // frente e fundos sobem até encostar no beiral
+  for (let j = V0; j < V1; j++) { const tv = Math.min(j - V0, V1 - 1 - j); if (tv >= WT) continue; const kt = Math.ceil(roofK(j) - RT - 0.5);
+    for (let k = wallK; k < kt; k++) for (let i = U0; i < U1; i++) set(i, j, k, log ? WOOD : WALL, extCol(i, Math.min(tv, WT - 2), k, 9), 8); }
+  // empenas: as pontas sobem até o telhado (tábuas em Kursk, pedra na Normandia)
+  for (let j = V0; j < V1; j++) { const top = roofK(j) - RT * 0.5;
+    for (let k = wallK; k < top; k++) for (let t = 0; t < WT; t++) for (const i of [U0 + t, U1 - 1 - t]) {
+      if (thatch) set(i, j, k, WOOD, mix([128, 98, 66], ((j >> 1) & 1 ? 0.88 : 1) * (j % 2 ? 1 : 0.84)), 8); else set(i, j, k, WALL, extCol(j, Math.min(t, WT - 2), k, 9), 10); } }
+  // assoalho, piso de cima com vigas e forro
+  const board = (i, j, k) => mix([104, 78, 54], (j % 2 ? 1 : 0.84) * (0.9 + 0.14 * h3(j >> 1, (i / 14) | 0, k, s)));
+  if (barn) box(iu0, iu1, iv0, iv1, 0, 1, DIRT, (i, j) => mix([112, 94, 66], 0.82 + 0.26 * h3(i, j, 0, s)), 6);
+  else box(iu0, iu1, iv0, iv1, 0, 1, FLOOR, board, 6);
+  for (let f = 1; f < nf; f++) { const k0 = f * ST - 2; box(iu0, iu1, iv0, iv1, k0 + 1, k0 + 2, FLOOR, board, 6);
+    for (let i = iu0; i < iu1; i++) if ((i - iu0) % 8 < 2) box(i, i + 1, iv0, iv1, k0, k0 + 1, WOOD, [88, 66, 46], 6); }
+  if (!barn) box(iu0, iu1, iv0, iv1, wallK - 1, wallK, FLOOR, (i, j) => mix([150, 120, 84], 0.9 + 0.12 * h3(i >> 1, (j / 12) | 0, 9, s)), 6);
+  // cômodos: o comprimento é cortado por paredes internas (as mesmas nos dois andares, uma em cima da outra)
+  const L = iu1 - iu0, nR = barn ? 1 : L >= 72 ? 3 : L >= 46 ? 2 : 1; let cuts = [];
+  if (nR === 2) cuts = [iu0 + Math.round(L * (0.42 + 0.16 * r()))];
+  if (nR === 3) cuts = [iu0 + Math.round(L * (0.3 + 0.06 * r())), iu0 + Math.round(L * (0.62 + 0.06 * r()))];
+  if (nf === 2 && cuts.length) { cuts[0] = Math.max(cuts[0], iu0 + 34); if (cuts[1] && cuts[1] - cuts[0] < 26) cuts.pop(); if (iu1 - cuts[cuts.length - 1] < 24) cuts.pop(); }
+  const spans = []; { let u = iu0; for (const c of cuts) { spans.push([u, c]); u = c + IT; } spans.push([u, iu1]); }
+  const kindsG = barn ? ['celeiro'] : spans.length === 1 ? ['cozinha'] : nf === 2 ? (spans.length === 3 ? ['entrada', 'cozinha', 'sala'] : ['sala', 'cozinha'])
+    : spans.length === 3 ? ['entrada', 'cozinha', 'quarto'] : ['cozinha', 'quarto'];
+  const intM = log ? WOOD : WALL, intCol = (i, j, k) => log ? mix([150, 116, 78], (k % 2 ? 1 : 0.86)) : mix(plaster, 0.93 + 0.07 * h3(i >> 2, j >> 2, k >> 2, s));
+  const rooms = [], doors = [], wins = [], stairs = [];
+  const bandLo = fBack === 0 ? iv0 : iv1 - 9, bandHi = bandLo + 9;               // faixa da escada, encostada na parede de trás
+  const doorPos = (lo, hi, avoid) => { const ok = []; for (let a = lo; a <= hi; a++) if (!avoid || a + 9 + 2 <= avoid[0] || a >= avoid[1] + 2) ok.push(a); return ok.length ? ok[(r() * ok.length) | 0] : -1; };
+  for (let f = 0; f < nf; f++) { const b = base(f), top = ceilK(f);
+    for (const c of cuts) box(c, c + IT, iv0, iv1, b, top, intM, intCol, 6);
+    spans.forEach((sp, q) => rooms.push({ id: rooms.length, f, u0: sp[0], u1: sp[1], v0: iv0, v1: iv1, b, top, kind: f === 0 ? kindsG[q] : 'quarto', q }));
+    // portas internas entre cômodos vizinhos (fora da faixa da escada)
+    cuts.forEach((c, q) => { const a = doorPos(iv0 + 2, iv1 - 11, nf === 2 && q === 0 ? [bandLo, bandHi] : null); if (a < 0) return; clear(c, c + IT, a, a + 9, b, b + 20);
+      doors.push({ f, u: c + IT / 2, v: a + 4.5, k0: b, k1: b + 20, w: 9, n: [1, 0], a: -1, b: -1 }); }); }
+  // o último cômodo do térreo às vezes é dividido em frente e fundos
+  if (!barn && spans.length >= 2 && iv1 - iv0 >= 56 && r() < 0.5) { const R = rooms.find(R => R.f === 0 && R.q === spans.length - 1), cv = iv0 + Math.round((iv1 - iv0) * (0.45 + 0.1 * r()));
+    box(R.u0, R.u1, cv, cv + IT, R.b, R.top, intM, intCol, 6);
+    const R2 = { id: rooms.length, f: 0, u0: R.u0, u1: R.u1, v0: cv + IT, v1: R.v1, b: R.b, top: R.top, kind: 'quarto', q: R.q }; R.v1 = cv; rooms.push(R2);
+    if (fFront === 1) { const t = R.kind; R.kind = R2.kind; R2.kind = t; }      // o cômodo da frente fica com o uso original
+    const a = doorPos(R.u0 + 2, R.u1 - 11); if (a >= 0) { clear(a, a + 9, cv, cv + IT, R.b, R.b + 20); doors.push({ f: 0, u: a + 4.5, v: cv + 1, k0: R.b, k1: R.b + 20, w: 9, n: [0, 1], a: R.id, b: R2.id }); } }
+  const roomAt = (f, u, v) => rooms.find(R => R.f === f && u >= R.u0 && u < R.u1 && v >= R.v0 && v < R.v1);
+  for (const d of doors) if (d.n[0]) { const A = roomAt(d.f, d.u - 2, d.v), B = roomAt(d.f, d.u + 2, d.v); d.a = A ? A.id : -1; d.b = B ? B.id : -1; }
+  // escada reta de madeira no primeiro cômodo, subindo ao longo da parede de trás
+  let us = -1;
+  if (nf === 2) { us = iu0 + 2; const stc = [152, 114, 76];
+    clear(us + 6, us + 28, bandLo, bandHi, ST - 2, ST);
+    for (let q = 0; q < 14; q++) box(us + 2 * q, us + 2 * q + 2, bandLo, bandHi, Math.max(1, 2 * q - 1), 2 * q + 2, WOOD, (i, j, k) => mix(stc, k === 2 * q + 1 ? 1.06 : 0.84), 6);
+    const rj = fBack === 0 ? bandHi : bandLo - 1;
+    for (let i = us + 5; i < us + 28; i++) { if ((i - us) % 5 === 0) box(i, i + 1, rj, rj + 1, ST, ST + 9, WOOD, [104, 78, 52], 4); set(i, rj, ST + 9, WOOD, [124, 94, 62], 4); }
+    for (let j = bandLo; j < bandHi; j++) { if ((j - bandLo) % 4 === 0) box(us + 5, us + 6, j, j + 1, ST, ST + 9, WOOD, [104, 78, 52], 4); set(us + 5, j, ST + 9, WOOD, [124, 94, 62], 4); }
+    const R0 = roomAt(0, us, bandLo), R1 = roomAt(1, us + 27, bandLo);
+    stairs.push({ u0: us, u1: us + 28, v0: bandLo, v1: bandHi, k0: 1, k1: ST, a: R0 && R0.id, b: R1 && R1.id }); }
+  // portas de fora
+  const extDoor = (face, a0, w, k1, leaf, room) => {
+    for (let a = a0; a < a0 + w; a++) for (let t = 0; t < WT; t++) for (let k = 1; k < k1; k++) { const [i, j] = faceIJ(face, a, t); set(i, j, k, 0); }
+    const mid = WT >> 1;
+    if (leaf) for (let a = a0; a < a0 + w; a++) for (let k = 1; k < k1; k++) { const [i, j] = faceIJ(face, a, mid), pl = a - a0;
+      if (a === a0 || a === a0 + w - 1 || k === k1 - 1) { set(i, j, k, WOOD, [70, 52, 38], 6); continue; }
+      set(i, j, k, WOOD, mix(thatch ? shutC : woodC, ((pl >> 1) & 1 ? 0.9 : 1) * (pl % 2 ? 1 : 0.84)), 6);
+      if (pl === w - 3 && k === 11) set(i, j, k, METAL, [40, 40, 38], 0); }
+    for (let a = a0 - 1; a < a0 + w + 1; a++) for (const t of [-1, -2]) { const [i, j] = faceIJ(face, a, t); set(i, j, 0, STONE, [150, 144, 132], 10); }
+    const c = faceIJ(face, a0 + w / 2, 0); doors.push({ u: face < 2 ? a0 + w / 2 : c[0], v: face < 2 ? c[1] : a0 + w / 2, k0: 1, k1, w, n: FN[face], a: room ? room.id : -1, b: -1, out: true, leaf, face, a0 }); };
+  const g0 = rooms.filter(R => R.f === 0);
+  const touchF = (R, face) => face === 0 ? R.v0 === iv0 : face === 1 ? R.v1 === iv1 : face === 2 ? R.u0 === iu0 : R.u1 === iu1;
+  if (barn) extDoor(fFront, Math.round((iu0 + iu1) / 2 - 14), 28, 29, false, g0[0]);
+  else { const R = g0.find(R => touchF(R, fFront)), a = Math.max(R.u0 + 2, Math.min(R.u1 - 12, R.u0 + Math.round((R.u1 - R.u0 - 10) * (0.3 + 0.4 * r())))); extDoor(fFront, a, 10, 22, true, R);
+    if (!thatch && r() < 0.45) { const Rb = g0.filter(R => touchF(R, fBack)).pop(); if (Rb && Rb.u1 - Rb.u0 > 16 && Rb !== g0[0]) extDoor(fBack, Rb.u1 - 13, 10, 22, true, Rb); } }
+  // fogão (forno russo em Kursk, lareira na Normandia): decide antes das janelas, para não pôr janela atrás dele
+  const kit = rooms.find(R => R.kind === 'cozinha'); let hearth = null;
+  if (kit) { if (thatch) hearth = { side: touchF(kit, fBack) ? fBack : fFront, w: 15, d: 15, end: r() < 0.5 };
+    else { const g = touchF(kit, 2) ? 2 : touchF(kit, 3) ? 3 : -1; hearth = g >= 0 ? { side: g, w: 14, d: 5, mid: true } : { side: fBack, w: 14, d: 5, end: false }; } }
+  // janelas
+  const window_ = (face, ac, k0, k1, room, glass) => { const a0 = ac - 4, a1 = ac + 5, mid = WT >> 1, idx = [];
+    for (let a = a0; a < a1; a++) for (let t = 0; t < WT; t++) for (let k = k0; k < k1; k++) { const [i, j] = faceIJ(face, a, t); set(i, j, k, 0); }
+    if (glass) for (let a = a0; a < a1; a++) for (let k = k0; k < k1; k++) { const [i, j] = faceIJ(face, a, mid);
+      if (a === a0 || a === a1 - 1 || k === k0 || k === k1 - 1 || a === ac || k === k0 + 6) set(i, j, k, WOOD, frameC, 6);
+      else { set(i, j, k, GLASS, (a + k) % 6 === 0 ? [128, 146, 156] : glassC, 6); idx.push(at(i, j, k)); } }
+    for (let a = a0 - 1; a < a1 + 1; a++) { const [i, j] = faceIJ(face, a, -1); set(i, j, k0 - 1, WOOD, [92, 72, 52], 6); }
+    if (!thatch) for (let a = a0 - 1; a < a1 + 1; a++) for (let t = 0; t < WT - 1; t++) { const [i, j] = faceIJ(face, a, t); set(i, j, k1, WALL, [202, 194, 174], 8); }
+    if (glass && shutters) for (const [p0, p1] of [[a0 - 5, a0 - 1], [a1 + 1, a1 + 5]]) for (let a = p0; a < p1; a++) for (let k = k0; k < k1; k++) { const [i, j] = faceIJ(face, a, -1); set(i, j, k, WOOD, mix(shutC, (k >> 1) & 1 ? 0.92 : 1), 6); }
+    const c = faceIJ(face, ac + 0.5, 0); wins.push({ face, ac, a0, a1, k0, k1, room: room.id, glass, idx, u: face < 2 ? ac + 0.5 : c[0], v: face < 2 ? c[1] : ac + 0.5 }); };
+  for (const R of rooms) { const b = R.b, wk0 = b + (barn ? 18 : 9), wk1 = b + (barn ? 26 : 19);
+    for (const face of [0, 1]) { if (!touchF(R, face)) continue; const span = R.u1 - R.u0, nw = barn ? Math.max(1, Math.floor(span / 34)) : span >= 38 ? 2 : span >= 16 ? 1 : 0;
+      for (let q = 0; q < nw; q++) { const ac = Math.round(R.u0 + span * (q + .5) / nw);
+        if (R.f === 0 && doors.some(d => d.out && d.face === face && ac + 10 > d.a0 && ac - 10 < d.a0 + d.w)) continue;
+        if (R.f === 0 && nf === 2 && face === fBack && ac < us + 30 && ac > us - 6) continue;
+        if (hearth && R === kit && hearth.side === face) continue;
+        window_(face, ac, wk0, wk1, R, !barn); } }
+    for (const face of [2, 3]) { if (!touchF(R, face) || R.v1 - R.v0 < 18) continue; if (hearth && R === kit && hearth.side === face) continue;
+      window_(face, Math.round((R.v0 + R.v1) / 2), wk0, wk1, R, !barn); } }
+  // ---- telhado (por cima de tudo que já foi feito)
+  for (let j = 0; j < nv; j++) { const dv = Math.abs(j + .5 - nv / 2); if (dv > ha) continue; const rz = roofK(j);
+    for (let k = Math.max(0, Math.ceil(rz - RT - 0.5)); k <= Math.floor(rz - 0.5) && k < nz; k++) for (let i = U0 - ovU; i < U1 + ovU; i++) {
+      const n = h3(i, j, k, s), pl = (i + .5 - nu / 2) * PVS, ap = dv * PVS, H = ha * PVS, al = Math.abs(pl), gx = (U1 + ovU - nu / 2) * PVS;
+      let c; if (thatch) { const strand = h3(Math.floor(pl / 0.07), 0, 0, s), course = ((H - ap) / 0.42) % 1;
         c = mix(roofC, (0.84 + 0.22 * strand) * (course < 0.1 + 0.08 * strand ? 0.92 : 1) * (ap < 0.3 ? 0.78 : 1) * (al > gx - 0.12 ? 0.85 : 1)); }
-      else { const row = Math.floor((ha - ap) / 0.26), fr = ((ha - ap) / 0.26) % 1, col = Math.floor((pl + (row & 1) * 0.11) / 0.22), v = h3(row, col, 0, s);
+      else { const row = Math.floor((H - ap) / 0.26), fr = ((H - ap) / 0.26) % 1, col = Math.floor((pl + (row & 1) * 0.11) / 0.22), v = h3(row, col, 0, s);
         c = mix(roofC, (fr < 0.22 ? 0.72 : 0.9 + 0.16 * v) * (ap < 0.22 ? 0.8 : 1)); }
-      put(pr, i, j, k, thatch ? THATCH : TILE, c, thatch ? 20 : 8, s); continue; }
-    if (!inX || !inY) continue;
-    const dX = ex - al, dY = ey - ap, edgeX = dX < WT, edgeY = dY < WT, layer = Math.min(dX, dY) / PVS | 0;  // 0 = face de fora
-    // piso de tábuas
-    if (k === 0 && !edgeX && !edgeY) { put(pr, i, j, k, FLOOR, mix([96, 72, 50], (pa * 5) % 1 < 0.12 ? 0.78 : 0.95 + 0.1 * h3(Math.floor(pa * 5), Math.floor(pl / 1.2), 0, s)), 8, s); continue; }
-    // fogão de barro / lareira e mesa
-    if (!edgeX && !edgeY) {
-      if (Math.abs(pl - chim[0]) < 0.65 && Math.abs(pa - chim[1]) < 0.6 && pz < 1.6) { put(pr, i, j, k, BRICK, thatch ? [222, 216, 200] : [120, 104, 90], 14, s); continue; }
-      const tx = Math.abs(pl - table[0]), ty = Math.abs(pa - table[1]);
-      if (tx < 0.6 && ty < 0.4 && ((pz > 0.7 && pz < 0.8) || (tx > 0.5 && ty > 0.3 && pz < 0.8))) { put(pr, i, j, k, WOOD, woodC, 10, s); continue; }
-      continue; }
-    const wallTop = edgeX ? roofZ - RT * 0.5 : wh;   // empenas sobem até o telhado
-    if (pz > wallTop) continue;
-    // portas e janelas
-    if (edgeY && !edgeX) {
-      const dd = Math.abs(pl - door);
-      if (pa > 0 && dd < 0.55 && pz < 2.1) {
-        if (dd > 0.47 || pz > 2.02) { put(pr, i, j, k, WOOD, [70, 52, 38], 6, s); continue; }
-        if (layer === 1) { const plank = Math.floor((pl - door + 0.6) / 0.15); put(pr, i, j, k, WOOD, mix(thatch ? shutC : woodC, (plank & 1 ? 0.9 : 1) * ((pl - door + 0.6) % 0.15 < 0.03 ? 0.75 : 1)), 6, s);
-          if (Math.abs(pl - door - 0.36) < 0.05 && Math.abs(pz - 1.05) < 0.05) put(pr, i, j, k, METAL, [40, 40, 38], 0, s); }
-        continue; }
-      const t = ((pl + ex) % 2.4 + 2.4) % 2.4;
-      if (t > 0.75 && t < 1.65 && pz > 1.0 && pz < 1.95 && al < ex - 0.7) {
-        const fr = t < 0.83 || t > 1.57 || pz < 1.08 || pz > 1.87, mull = Math.abs(t - 1.2) < 0.04 || Math.abs(pz - 1.6) < 0.04;
-        if (fr || (mull && layer === 1)) put(pr, i, j, k, WOOD, frameC, 6, s);
-        else if (layer === 1) put(pr, i, j, k, GLASS, ((t + pz) % 0.6) < 0.08 ? [128, 146, 156] : glassC, 6, s);
-        continue; }
-      // venezianas dos lados da janela
-      if (layer === 0 && al < ex - 0.7 && pz > 1.0 && pz < 1.95 && ((t > 0.33 && t < 0.72) || (t > 1.68 && t < 2.07))) {
-        put(pr, i, j, k, WOOD, mix(shutC, (Math.floor(pz / 0.12) & 1) ? 0.92 : 1), 6, s); continue; }
-      if (layer === 0 && t > 0.72 && t < 1.68 && pz > 0.92 && pz < 1.0 && al < ex - 0.7) { put(pr, i, j, k, WOOD, [92, 72, 52], 6, s); continue; }
-    }
-    if (edgeX && !edgeY && pz > 1.1 && pz < 1.9 && ap < 0.42) {
-      const fr = ap > 0.35 || pz < 1.17 || pz > 1.83;
-      if (fr) put(pr, i, j, k, WOOD, frameC, 6, s); else if (layer === 1) put(pr, i, j, k, GLASS, glassC, 6, s);
-      continue; }
-    // parede
-    let c, m = WALL;
-    if (edgeX && pz > wh && thatch) { const b = Math.floor(pa / 0.16); c = mix([128, 98, 66], (b & 1 ? 0.88 : 1) * ((pa / 0.16) % 1 < 0.15 ? 0.78 : 1)); m = WOOD; }
-    else if (thatch) { c = pz < 0.45 ? [150, 118, 84] : mix(wallC, 0.94 + 0.08 * vn3(pl / 0.5, pa / 0.5, pz / 0.5, s)); if (pz < 0.45 && pz > 0.4) c = [120, 94, 68]; }
-    else { // pedra com argamassa
-      const rowH = 0.22, row = Math.floor(pz / rowH), along = edgeY ? pl : pa, off = h3(row, 0, 0, s) * 0.4, sl = 0.32 + 0.2 * h3(row, 1, 0, s);
-      const st = Math.floor((along + off) / sl), fu = ((along + off) / sl) % 1, fz = (pz / rowH) % 1, quoin = dX < 0.45 && dY < 0.45;
-      if (fu < 0.1 || fz < 0.14) c = [196, 188, 170];
-      else c = mix(quoin ? [196, 186, 160] : wallC, 0.82 + 0.26 * h3(row, st, 2, s)); }
-    put(pr, i, j, k, m, c, thatch ? 8 : 10, s);
-  }
+      set(i, j, k, thatch ? THATCH : TILE, c, thatch ? 20 : 8); } }
+  // ---- móveis: cada andar tem um mapa do chão ocupado (paredes, portas, escada) e outro da parede (janelas)
+  const occ = [], tall = []; for (let f = 0; f < nf; f++) { occ.push(new Uint8Array(nu * nv)); tall.push(new Uint8Array(nu * nv)); }
+  const markA = (A, i0, i1, j0, j1) => { for (let j = Math.max(0, j0); j < Math.min(nv, j1); j++) for (let i = Math.max(0, i0); i < Math.min(nu, i1); i++) A[j * nu + i] = 1; };
+  const freeA = (A, i0, i1, j0, j1) => { for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) if (A[j * nu + i]) return false; return true; };
+  for (let f = 0; f < nf; f++) { for (let j = iv0; j < iv1; j++) for (let i = iu0; i < iu1; i++) if (mat[at(i, j, base(f))]) occ[f][j * nu + i] = 1;   // paredes, escada, fogão
+    for (const d of doors) { const R = rooms[d.a] || rooms[d.b]; if (!R || R.f !== f) continue; markA(occ[f], Math.floor(d.u - 9), Math.ceil(d.u + 9), Math.floor(d.v - 9), Math.ceil(d.v + 9)); }
+    for (const w of wins) { const R = rooms[w.room]; if (R.f !== f) continue; markA(tall[f], Math.floor(w.u - 7), Math.ceil(w.u + 7), Math.floor(w.v - 7), Math.ceil(w.v + 7)); } }
+  if (nf === 2) { markA(occ[0], us - 1, us + 31, bandLo - 2, bandHi + 2); markA(occ[1], us + 4, us + 29, bandLo - 2, bandHi + 2); markA(tall[0], us - 1, us + 31, bandLo - 2, bandHi + 2); }
+  const FR = (R, side, off) => side === 0 ? (p, q) => [R.u0 + off + p, R.v0 + q] : side === 1 ? (p, q) => [R.u0 + off + p, R.v1 - 1 - q] : side === 2 ? (p, q) => [R.u0 + q, R.v0 + off + p] : (p, q) => [R.u1 - 1 - q, R.v0 + off + p];
+  const sideLen = (R, side) => side < 2 ? R.u1 - R.u0 : R.v1 - R.v0;
+  // encosta um móvel w x d numa parede; build(B, ij) desenha no sistema do móvel: p ao longo da parede, q para dentro, k a partir do chão
+  const place = (R, w, d, isTall, build, sides, offs) => { for (let tries = 0; tries < 16; tries++) {
+      const side = sides ? sides[(r() * sides.length) | 0] : (r() * 4) | 0, len = sideLen(R, side); if (len < w + 2) continue;
+      const off = offs !== undefined ? (offs < 0 ? len - w - 1 : offs) : 1 + ((r() * (len - w - 1)) | 0), ij = FR(R, side, off);
+      const a = ij(0, 0), e = ij(w - 1, d - 1), i0 = Math.min(a[0], e[0]), i1 = Math.max(a[0], e[0]) + 1, j0 = Math.min(a[1], e[1]), j1 = Math.max(a[1], e[1]) + 1;
+      if (i0 < R.u0 || j0 < R.v0 || i1 > R.u1 || j1 > R.v1 || !freeA(occ[R.f], i0, i1, j0, j1) || (isTall && !freeA(tall[R.f], i0, i1, j0, j1))) continue;
+      markA(occ[R.f], i0, i1, j0, j1); if (isTall) markA(tall[R.f], i0, i1, j0, j1);
+      const b0 = R.b; build((p, q, k, m, c, jit) => { const [i, j] = ij(p, q); set(i, j, b0 + k, m, c, jit === undefined ? 6 : jit); }, ij); return true; }
+    return false; };
+  // na parede, acima dos móveis: quadros e prateleiras (não ocupam o chão)
+  const onWall = (R, w, k0, k1, build) => { for (let tries = 0; tries < 12; tries++) { const side = (r() * 4) | 0, len = sideLen(R, side); if (len < w + 4) continue;
+      const off = 2 + ((r() * (len - w - 3)) | 0), ij = FR(R, side, off); let ok = true;
+      for (let p = 0; p < w && ok; p++) { const [i, j] = ij(p, 0); if (tall[R.f][j * nu + i]) ok = false;
+        for (let k = k0; k < k1 && ok; k++) if (mat[at(i, j, R.b + k)]) ok = false;
+        const bk = FR(R, side, off)(p, -1); if (!mat[at(bk[0], bk[1], R.b + k0)]) ok = false; }
+      if (!ok) continue; const a = ij(0, 0), e = ij(w - 1, 0); markA(tall[R.f], Math.min(a[0], e[0]), Math.max(a[0], e[0]) + 1, Math.min(a[1], e[1]), Math.max(a[1], e[1]) + 1);
+      build((p, q, k, m, c, jit) => { const [i, j] = ij(p, q); set(i, j, R.b + k, m, c, jit === undefined ? 4 : jit); }); return true; } return false; };
+  const WD = [112, 82, 56], WDk = [86, 62, 42];
+  const bed = B => { const bc = pick([[150, 60, 50], [70, 90, 130], [120, 110, 70], [96, 120, 80], [140, 120, 150]]);
+    for (let q = 0; q < 20; q++) for (let p = 0; p < 10; p++) {
+      if ((p === 0 || p === 9) && (q === 0 || q === 19)) B(p, q, 0, WOOD, WDk);
+      B(p, q, 1, WOOD, WD); B(p, q, 2, CLOTH, [214, 206, 190], 10);
+      if (q < 5) { if (p > 0 && p < 9) B(p, q, 3, CLOTH, [234, 230, 222], 6); }
+      else B(p, q, 3, CLOTH, mix(bc, (p === 0 || p === 9 ? 0.8 : 1) * ((q >> 1) % 3 === 0 ? 0.86 : 1)), 10); }
+    for (let p = 0; p < 10; p++) for (let k = 1; k < 9; k++) B(p, 0, k, WOOD, mix(WDk, k === 8 ? 1.2 : 1)); };
+  const wardrobe = B => { for (let q = 0; q < 5; q++) for (let p = 0; p < 10; p++) for (let k = 0; k < 19; k++) { if (k === 0 && q === 4 && p > 0 && p < 9) continue;
+      B(p, q, k, WOOD, mix(WD, (p === 4 || p === 5) && q === 4 ? 0.78 : k === 18 ? 1.15 : q === 4 && (k === 2 || k === 17) ? 0.9 : 1)); }
+    B(3, 5, 10, METAL, [180, 160, 100], 0); B(6, 5, 10, METAL, [180, 160, 100], 0); };
+  const dresser = B => { const pl = [[226, 224, 216], [90, 112, 168], [204, 190, 150], [170, 70, 60]];
+    for (let q = 0; q < 4; q++) for (let p = 0; p < 12; p++) { for (let k = 0; k < 8; k++) B(p, q, k, WOOD, mix(WD, k === 7 ? 1.12 : q === 3 && (p === 6 || k === 3) ? 0.8 : 1));
+      for (const k of [12, 16, 19]) B(p, q, k, WOOD, mix(WD, 1.08)); }
+    for (let p = 0; p < 12; p++) for (let k = 8; k < 19; k++) B(p, 0, k, WOOD, WDk);
+    for (let p = 1; p < 11; p += 2) for (const k of [8, 9, 13, 14, 17]) if (r() < 0.6) B(p, 1, k, TILE, pick(pl), 6); };
+  const bench = B => { for (let p = 0; p < 16; p++) for (let q = 0; q < 4; q++) { B(p, q, 4, WOOD, mix(WD, 1.05)); if (p === 1 || p === 14) for (let k = 0; k < 4; k++) B(p, q, k, WOOD, WDk); } };
+  const chest = B => { for (let p = 0; p < 9; p++) for (let q = 0; q < 5; q++) for (let k = 0; k < 6; k++) B(p, q, k, WOOD, mix([120, 76, 46], k === 5 ? 1.15 : k === 2 ? 0.8 : 1)); B(4, 5, 4, METAL, [60, 60, 56], 0); };
+  const shelf = B => { for (let p = 0; p < 10; p++) for (let q = 0; q < 3; q++) for (const k of [0, 4]) B(p, q, k, WOOD, mix(WD, 1.1));
+    for (let p = 1; p < 9; p += 2) for (const k of [1, 5]) if (r() < 0.65) B(p, 1, k, r() < 0.5 ? TILE : GLASS, pick([[226, 224, 216], [140, 96, 60], [90, 120, 90], [200, 160, 80]]), 6); };
+  const picture = (w, h, gold) => B => { const sky = pick([[120, 150, 180], [180, 150, 110], [90, 110, 80]]);
+    for (let p = 0; p < w; p++) for (let k = 0; k < h; k++) { const edge = p === 0 || p === w - 1 || k === 0 || k === h - 1;
+      B(p, 0, k, WOOD, edge ? (gold ? [196, 160, 70] : [70, 50, 32]) : gold ? (k > h / 2 ? [180, 60, 40] : [210, 170, 90]) : k < h / 2 ? mix([92, 120, 70], 0.9 + 0.2 * h3(p, k, 3, s)) : mix(sky, 0.9 + 0.2 * h3(p, k, 5, s)), 4); } };
+  // mesa solta no meio do cômodo, com cadeiras
+  const table = (R, cloth) => { for (let tries = 0; tries < 10; tries++) {
+      const tw = 12, td = 8, cu = Math.round((R.u0 + R.u1) / 2 + (r() - 0.5) * (R.u1 - R.u0 - 30)), cv = Math.round((R.v0 + R.v1) / 2 + (r() - 0.5) * (R.v1 - R.v0 - 26));
+      const i0 = cu - 6, j0 = cv - 4; if (i0 - 5 < R.u0 || j0 - 5 < R.v0 || i0 + tw + 5 > R.u1 || j0 + td + 5 > R.v1 || !freeA(occ[R.f], i0 - 5, i0 + tw + 5, j0 - 5, j0 + td + 5)) continue;
+      markA(occ[R.f], i0 - 5, i0 + tw + 5, j0 - 5, j0 + td + 5); const b = R.b, tc = mix(WD, 1.05);
+      for (let j = j0; j < j0 + td; j++) for (let i = i0; i < i0 + tw; i++) { set(i, j, b + 7, WOOD, tc, 6); if (cloth) set(i, j, b + 8, CLOTH, (i + j) % 4 === 0 ? [200, 70, 60] : [232, 228, 218], 4); }
+      for (const [i, j] of [[i0, j0], [i0 + tw - 1, j0], [i0, j0 + td - 1], [i0 + tw - 1, j0 + td - 1]]) box(i, i + 1, j, j + 1, b, b + 7, WOOD, WDk, 4);
+      const chair = (ci, cj, bi, bj) => { box(ci, ci + 4, cj, cj + 4, b + 4, b + 5, WOOD, tc, 4); for (const [a, e] of [[0, 0], [3, 0], [0, 3], [3, 3]]) box(ci + a, ci + a + 1, cj + e, cj + e + 1, b, b + 4, WOOD, WDk, 4);
+        box(ci + (bi > 0 ? 3 : 0), ci + (bi > 0 ? 4 : bi < 0 ? 1 : 4), cj + (bj > 0 ? 3 : 0), cj + (bj > 0 ? 4 : bj < 0 ? 1 : 4), b + 5, b + 10, WOOD, WD, 4); };
+      chair(i0 + 1, j0 - 4, 0, -1); chair(i0 + tw - 5, j0 + td, 0, 1); if (r() < 0.7) chair(i0 + 1, j0 + td, 0, 1); if (r() < 0.5) chair(i0 - 4, j0 + 2, -1, 0); if (r() < 0.5) chair(i0 + tw, j0 + 2, 1, 0);
+      return true; } return false; };
+  const rug = R => { const w = Math.round((R.u1 - R.u0) * 0.55), d = Math.round((R.v1 - R.v0) * 0.5), i0 = Math.round((R.u0 + R.u1 - w) / 2), j0 = Math.round((R.v0 + R.v1 - d) / 2), k = R.b - 1, c1 = pick([[150, 50, 46], [70, 80, 120], [120, 96, 50]]), c2 = [214, 196, 150];
+    for (let j = j0; j < j0 + d; j++) for (let i = i0; i < i0 + w; i++) { if (!mat[at(i, j, k)]) continue; const e = Math.min(i - i0, i0 + w - 1 - i, j - j0, j0 + d - 1 - j); set(i, j, k, CLOTH, e === 1 || e === 3 ? c2 : mix(c1, ((i + j) % 6 < 2 ? 0.85 : 1)), 6); } };
+  // chaminé de tijolo do fogão até passar do telhado
+  const chimney = (i0, i1, j0, j1, k0) => { let kt = 0; for (let j = j0; j < j1; j++) kt = Math.max(kt, Math.ceil(roofK(j)) + 7);
+    for (let k = k0; k < Math.min(nz, kt); k++) for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) { const row = k, brick = ((((i + j) * 10 + (row & 1) * 12) / 24) | 0) & 1;
+      set(i, j, k, BRICK, k >= kt - 1 ? [70, 66, 62] : k % 2 === 0 && (i + j + row) % 5 === 0 ? [168, 160, 150] : brick ? [140, 74, 56] : [124, 66, 50], 10); }
+    for (let f = 0; f < nf; f++) markA(occ[f], i0, i1, j0, j1); };
+  if (hearth) { const R = kit, hs = hearth;
+    if (thatch) place(R, 15, 15, true, (B, ij) => { const wc = [232, 228, 216];
+        for (let p = 0; p < 15; p++) for (let q = 0; q < 15; q++) for (let k = 0; k < 18; k++) { if (p >= 5 && p < 10 && q >= 10 && k >= 6 && k < 11) continue; B(p, q, k, BRICK, mix(wc, q === 14 && k === 5 ? 0.86 : k === 17 ? 1.02 : 1), 8); }
+        for (let p = 5; p < 10; p++) for (let k = 6; k < 11; k++) B(p, 9, k, BRICK, [40, 34, 30], 4);
+        const a = ij(2, 2), e = ij(6, 6); chimney(Math.min(a[0], e[0]), Math.max(a[0], e[0]) + 1, Math.min(a[1], e[1]), Math.max(a[1], e[1]) + 1, R.b + 18); }, [hs.side], hs.end ? -1 : 1);
+    else place(R, 14, 5, true, (B, ij) => { const sc = [154, 144, 126];
+        for (let p = 0; p < 14; p++) for (let q = 0; q < 5; q++) for (let k = 0; k < 13; k++) { if (p >= 4 && p < 10 && q >= 1 && k < 8) continue; B(p, q, k, STONE, mix(sc, 0.86 + 0.2 * h3(p >> 1, k >> 1, q, s)), 10); }
+        for (let p = 4; p < 10; p++) for (let k = 0; k < 8; k++) B(p, 1, k, STONE, [36, 30, 26], 4);
+        for (let p = -1; p < 15; p++) for (let q = 0; q < 6; q++) B(p, q, 13, WOOD, WDk, 4);
+        const a = ij(4, 0), e = ij(9, 3); chimney(Math.min(a[0], e[0]), Math.max(a[0], e[0]) + 1, Math.min(a[1], e[1]), Math.max(a[1], e[1]) + 1, R.b + 14); },
+      [hs.side], hs.mid ? Math.round((sideLen(R, hs.side) - 14) / 2) : 2); }
+  const kursk = thatch;
+  for (const R of rooms) { const big = (R.u1 - R.u0) * (R.v1 - R.v0) > 900;
+    if (R.kind === 'celeiro') continue;
+    if (R.kind === 'sala' || (R.kind === 'quarto' && big && r() < 0.5)) rug(R);
+    if (R.kind === 'quarto') { place(R, 10, 20, false, bed); if (big && r() < 0.5) place(R, 10, 20, false, bed); place(R, 10, 5, true, wardrobe); if (r() < 0.6) place(R, 9, 5, false, chest); }
+    if (R.kind === 'cozinha') { table(R, kursk && r() < 0.5); if (kursk) { place(R, 16, 4, false, bench); onWall(R, 10, 12, 18, shelf); } else place(R, 12, 4, true, dresser); }
+    if (R.kind === 'sala') { table(R, r() < 0.4); place(R, 12, 4, true, kursk ? wardrobe : dresser); if (r() < 0.6) place(R, 16, 4, false, bench); }
+    if (R.kind === 'entrada') { place(R, 16, 4, false, bench); if (r() < 0.7) place(R, 9, 5, false, chest); onWall(R, 10, 12, 18, shelf); }
+    const np = R.kind === 'entrada' ? 0 : 1 + (r() < 0.5 ? 1 : 0);
+    for (let q = 0; q < np; q++) { const w = 4 + ((r() * 3) | 0); onWall(R, w, 14, 14 + w + 1, picture(w, w + 1, false)); }
+    if (kursk && R.kind !== 'entrada' && R.f === 0 && r() < 0.6) onWall(R, 3, 19, 23, picture(3, 4, true)); }
+  // celeiro: montes de feno, baias de madeira
+  if (barn) { const R = rooms[0];
+    for (let q = 0; q < 2; q++) { const ci = q ? R.u1 - 18 : R.u0 + 18, cj = fBack === 0 ? R.v0 + 14 : R.v1 - 14, rr = 15 + r() * 4, hh = 17 + r() * 5;
+      for (let k = R.b; k < R.b + hh; k++) for (let j = cj - 20; j < cj + 20; j++) for (let i = ci - 20; i < ci + 20; i++) { const e = ((i - ci) ** 2 + (j - cj) ** 2) / (rr * rr) + ((k - R.b) / hh) ** 2, cl = vn3(i / 4, j / 4, k / 4, s);
+        if (e < 0.9 + 0.2 * cl && i >= R.u0 && i < R.u1 && j >= R.v0 && j < R.v1) set(i, j, k, HAY, mix([206, 176, 98], 0.78 + 0.25 * cl), 22); } }
+    const st0 = Math.round((R.u0 + R.u1) / 2 - 22);
+    for (let u = st0; u <= st0 + 44; u += 16) for (let q = 0; q < 16; q++) { const j = fBack === 0 ? R.v0 + q : R.v1 - 1 - q; for (let k = R.b; k < R.b + 12; k++) set(u, j, k, WOOD, mix([120, 92, 62], (k % 3 ? 1 : 0.85)), 6); } }
   finish(pr);
-  pr.block = true; pr.crush = false;
-  pr.foot = alongX ? [cx - ex - 0.1, cy - ey - 0.1, cx + ex + 0.1, cy + ey + 0.1] : [cx - ey - 0.1, cy - ex - 0.1, cx + ey + 0.1, cy + ex + 0.1];
+  pr.block = false; pr.crush = false; pr.struct = true; pr.cutK = barn ? 23 : 19; pr.settleN = 0;
+  pr.foot = alongX ? [cx - W / 2 - 0.1, cy - D / 2 - 0.1, cx + W / 2 + 0.1, cy + D / 2 + 0.1] : [cx - D / 2 - 0.1, cy - W / 2 - 0.1, cx + D / 2 + 0.1, cy + W / 2 + 0.1];
+  pr.rubbleC = [wallC, roofC, woodC];
+  // sistema local → mundo
+  const lx0 = cx - nu * PVS / 2, ly0 = cy - nv * PVS / 2;
+  const W2 = (u, v) => { const x = lx0 + u * PVS - cx, y = ly0 + v * PVS - cy; return alongX ? [r2(cx + x), r2(cy + y)] : [r2(cx - y), r2(cy + x)]; };
+  const N2 = n => alongX ? n.slice() : [-n[1], n[0]];
+  const B2 = (u0, u1, v0, v1) => { const a = W2(u0, v0), b = W2(u1, v1); return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])]; };
+  const idxW = alongX ? q => q : q => { const i = q % nu, t = (q / nu) | 0, j = t % nv, k = (t / nv) | 0; return (k * nu + i) * nv + (nv - 1 - j); };
   if (!alongX) rotate90(pr, cx, cy);
+  pr.win = wins.filter(w => w.glass).map(w => { const p = W2(w.u, w.v); return { idx: Int32Array.from(w.idx, idxW), c: [p[0], p[1], r2((w.k0 + w.k1) / 2 * PVS)], broken: false }; });
+  let gi = 0;
+  pr.nav = { floors: nf, floorZ: Array.from({ length: nf }, (_, f) => r2(base(f) * PVS)),
+    rooms: rooms.map(R => ({ id: R.id, floor: R.f, kind: R.kind, box: B2(R.u0, R.u1, R.v0, R.v1), z0: r2(R.b * PVS), z1: r2(R.top * PVS) })),
+    doors: doors.map(d => { const p = W2(d.u, d.v); return { x: p[0], y: p[1], z0: r2(d.k0 * PVS), z1: r2(d.k1 * PVS), w: r2(d.w * PVS), n: N2(d.n), a: d.a, b: d.b, out: !!d.out, leaf: !!d.leaf }; }),
+    windows: wins.map(w => { const p = W2(w.u, w.v); return { x: p[0], y: p[1], z0: r2(w.k0 * PVS), z1: r2(w.k1 * PVS), w: 0.9, n: N2(FN[w.face]), room: w.room, glass: w.glass ? gi++ : -1 }; }),
+    stairs: stairs.map(t => ({ box: B2(t.u0, t.u1, t.v0, t.v1), z0: 0.1, z1: r2(t.k1 * PVS), up: N2([1, 0]), from: t.a, to: t.b })) };
   pr.cx = cx; pr.cy = cy;
   return pr;
 }
@@ -193,7 +366,7 @@ function house(cx, cy, w, d, alongX, T, s) {
 function rotate90(pr, cx, cy) {
   const { nx, ny, nz } = pr, o = newProp(pr.kind, cx - ny * PVS / 2, cy - nx * PVS / 2, ny, nx, nz);
   for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) { const a = (k * ny + j) * nx + i; if (!pr.mat[a]) continue;
-    const b = (k * nx + i) * ny + (ny - 1 - j); o.mat[b] = pr.mat[a]; o.cr[b] = pr.cr[a]; o.cg[b] = pr.cg[a]; o.cb[b] = pr.cb[a]; }
+    const b = (k * nx + i) * ny + (ny - 1 - j); o.mat[b] = pr.mat[a]; if (o.cr) { o.cr[b] = pr.cr[a]; o.cg[b] = pr.cg[a]; o.cb[b] = pr.cb[a]; } }
   Object.assign(pr, { x0: o.x0, y0: o.y0, nx: ny, ny: nx, mat: o.mat, cr: o.cr, cg: o.cg, cb: o.cb }); pr.solid0 = undefined; finish(pr);
 }
 
@@ -384,7 +557,7 @@ function burn(pr, x, y, z, r, seed, rem) { own(pr); rem = rem || [];
   const k0 = Math.max(0, Math.floor((z - r) / P)), k1 = Math.min(nz - 1, Math.floor((z + r) / P));
   for (let k = k0; k <= k1; k++) for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) { const idx = (k * ny + j) * nx + i, m = mat[idx]; if (!BURN[m]) continue;
     const dx = pr.x0 + (i + .5) * P - x, dy = pr.y0 + (j + .5) * P - y, dz = (k + .5) * P - z; if (dx * dx + dy * dy + dz * dz > r2) continue;
-    if (h3(i, j, k, seed) > (m === WOOD ? 0.25 : 0.7)) continue;
+    if (h3(i, j, k, seed) > (m === WOOD || m === FLOOR ? 0.25 : 0.7)) continue;
     if (!SOFT[m]) pr.solid--; mat[idx] = 0; rem.push(idx); }
   return rem; }
 function flammableNear(pr, x, y, z, r) { const P = PVS, { nx, ny, nz, mat } = pr;
@@ -392,19 +565,6 @@ function flammableNear(pr, x, y, z, r) { const P = PVS, { nx, ny, nz, mat } = pr
   const k0 = Math.max(0, Math.floor((z - r) / P)), k1 = Math.min(nz - 1, Math.floor((z + r) / P)); let n = 0;
   for (let k = k0; k <= k1; k += 2) for (let j = j0; j <= j1; j += 2) for (let i = i0; i <= i1; i += 2) if (BURN[mat[(k * ny + j) * nx + i]]) n++;
   return n; }
-// casa desaba: o que estava acima de 1,1 m cai e vira um monte de entulho dentro das paredes
-function collapse(pr) { own(pr); const rem = [], P = PVS, { nx, ny, nz, mat } = pr, kc = Math.ceil(1.1 / P);
-  for (let k = kc; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) { const idx = (k * ny + j) * nx + i; if (mat[idx]) { mat[idx] = 0; rem.push(idx); } }
-  const f = pr.foot, hx = (f[2] - f[0]) / 2, hy = (f[3] - f[1]) / 2, cx = (f[0] + f[2]) / 2, cy = (f[1] + f[3]) / 2, s = (pr.id || 1) * 7919, C = pr.rubbleC || [[150, 140, 120], [120, 100, 70], [110, 84, 58]];
-  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-    const x = pr.x0 + (i + .5) * P, y = pr.y0 + (j + .5) * P, u = (x - cx) / hx, v = (y - cy) / hy; if (Math.abs(u) > 1.08 || Math.abs(v) > 1.08) continue;
-    const hm = 1.25 * (1 - 0.7 * Math.min(1, u * u + v * v)) * (0.7 + 0.45 * vn3(x / 0.55, y / 0.55, 0, s)) - (Math.max(Math.abs(u), Math.abs(v)) > 1 ? 0.5 : 0);
-    for (let k = 0; k < kc + 3 && (k + .5) * P < hm; k++) { const idx = (k * ny + j) * nx + i; if (mat[idx]) continue;
-      const pick = h3(i >> 1, j >> 1, k >> 1, s), base = pick < 0.55 ? C[0] : pick < 0.82 ? C[1] : C[2];
-      mat[idx] = RUBBLE; const c = mix(base, 0.62 + 0.3 * h3(i, j, k, s + 1));
-      pr.cr[idx] = c[0]; pr.cg[idx] = c[1]; pr.cb[idx] = c[2]; } }
-  pr.collapsed = true; pr.block = false; pr.crush = true; pr.rubble = true;
-  finish(pr); return rem; }
 // árvore ou poste cai para um dos quatro lados (0 +x, 1 +y, 2 -x, 3 -y); o toco fica de pé
 function fell(M, pr, dir) {
   const ux = [1, 0, -1, 0][dir & 3], uy = [0, 1, 0, -1][dir & 3], P = PVS, { nx, ny, nz } = pr, cx = pr.cx, cy = pr.cy, tr = pr.trunkR || 0.15, stumpZ = 0.4;
@@ -419,19 +579,92 @@ function fell(M, pr, dir) {
   const nA0 = 10, nA1 = Math.ceil(maxS / P), nT = Math.ceil(maxT / P);
   const gx = ux ? nA0 + nA1 : 2 * nT, gy = uy ? nA0 + nA1 : 2 * nT, gz = Math.max(Math.ceil(maxZ / P), Math.ceil(stumpZ / P)) + 1;
   const bx0 = ux > 0 ? cx - nA0 * P : ux < 0 ? cx - nA1 * P : cx - nT * P, by0 = uy > 0 ? cy - nA0 * P : uy < 0 ? cy - nA1 * P : cy - nT * P;
-  const o = newProp(pr.kind, bx0, by0, gx, gy, gz);
+  const o = newProp(pr.kind, bx0, by0, gx, gy, gz); if (!pr.cr) o.cr = o.cg = o.cb = null;
   for (const [a, b, c, idx, stump] of src) {
     const wx = stump ? cx + a : cx + ux * a - uy * b, wy = stump ? cy + b : cy + uy * a + ux * b, wz = stump ? c : c;
     const i = Math.floor((wx - o.x0) / P), j = Math.floor((wy - o.y0) / P), k = Math.floor(wz / P); if (i < 0 || j < 0 || k < 0 || i >= gx || j >= gy || k >= gz) continue;
-    const t = (k * gy + j) * gx + i; o.mat[t] = pr.mat[idx]; o.cr[t] = pr.cr[idx]; o.cg[t] = pr.cg[idx]; o.cb[t] = pr.cb[idx]; }
+    const t = (k * gy + j) * gx + i; o.mat[t] = pr.mat[idx]; if (o.cr) { o.cr[t] = pr.cr[idx]; o.cg[t] = pr.cg[idx]; o.cb[t] = pr.cb[idx]; } }
   Object.assign(pr, { x0: o.x0, y0: o.y0, nx: gx, ny: gy, nz: gz, n: o.n, mat: o.mat, cr: o.cr, cg: o.cg, cb: o.cb, shared: false, sharedCol: false, tpl: null });
   pr.fallen = true; pr.block = false; pr.crush = true; pr.fallDir = dir & 3; pr.solid0 = undefined;
   finish(pr); pr.foot = [pr.bb[0], pr.bb[1], pr.bb[2], pr.bb[3]]; reindex(M, pr);
   return pr; }
 const fallDir = (dx, dy) => Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 0 : 2) : (dy > 0 ? 1 : 3);
 
+// ---------------------------------------------------------------- estrutura das casas
+// Tudo que não está mais ligado ao chão por algum caminho de voxels vizinhos cai. Pedaço pequeno some (vira poeira);
+// pedaço grande cai inteiro até encostar em algo e, se caiu de mais de meio metro, quebra e vira entulho.
+// out (só no navegador, para animar): out.bits = [x,y,z,r,g,b, ...] do que sumiu na hora; out.falls = [{ idx, drop, bits }] do que caiu
+let QB = null, MB = null;
+function settle(pr, out) {
+  own(pr); ownColors(pr); const { nx, ny, mat } = pr, nxy = nx * ny, n = pr.n, C3 = pr.cr; let any = false;
+  if (!QB || QB.length < n) { QB = new Int32Array(n); MB = new Uint8Array(n); }
+  const Q = QB, mark = MB, P = [0, 0, 0];
+  const rec = (list, idx) => { if (!out) return; propCenter(pr, idx, P); list.push(P[0], P[1], P[2], C3 ? C3[idx] : 128, C3 ? pr.cg[idx] : 128, C3 ? pr.cb[idx] : 128); };
+  for (let it = 0; it < 5; it++) {
+    mark.fill(0, 0, n); let qt = 0, qh = 0;
+    for (let idx = 0; idx < nxy; idx++) if (mat[idx]) { mark[idx] = 1; Q[qt++] = idx; }
+    while (qh < qt) { const idx = Q[qh++], i = idx % nx, j = ((idx / nx) | 0) % ny; let o;
+      if (i > 0 && mat[o = idx - 1] && !mark[o]) { mark[o] = 1; Q[qt++] = o; }
+      if (i < nx - 1 && mat[o = idx + 1] && !mark[o]) { mark[o] = 1; Q[qt++] = o; }
+      if (j > 0 && mat[o = idx - nx] && !mark[o]) { mark[o] = 1; Q[qt++] = o; }
+      if (j < ny - 1 && mat[o = idx + nx] && !mark[o]) { mark[o] = 1; Q[qt++] = o; }
+      if (idx >= nxy && mat[o = idx - nxy] && !mark[o]) { mark[o] = 1; Q[qt++] = o; }
+      if (idx + nxy < n && mat[o = idx + nxy] && !mark[o]) { mark[o] = 1; Q[qt++] = o; } }
+    // pedaços soltos, na ordem do voxel mais baixo
+    const comps = [];
+    for (const s0 of pr.list) { if (!mat[s0] || mark[s0]) continue; const C = [s0]; mark[s0] = 2;
+      for (let h = 0; h < C.length; h++) { const idx = C[h], i = idx % nx, j = ((idx / nx) | 0) % ny; let o;
+        if (i > 0 && mat[o = idx - 1] && !mark[o]) { mark[o] = 2; C.push(o); }
+        if (i < nx - 1 && mat[o = idx + 1] && !mark[o]) { mark[o] = 2; C.push(o); }
+        if (j > 0 && mat[o = idx - nx] && !mark[o]) { mark[o] = 2; C.push(o); }
+        if (j < ny - 1 && mat[o = idx + nx] && !mark[o]) { mark[o] = 2; C.push(o); }
+        if (idx >= nxy && mat[o = idx - nxy] && !mark[o]) { mark[o] = 2; C.push(o); }
+        if (idx + nxy < n && mat[o = idx + nxy] && !mark[o]) { mark[o] = 2; C.push(o); } }
+      comps.push(C); }
+    if (!comps.length) break;
+    let moved = false;
+    for (const C of comps) {
+      if (C.length < 40) { for (const idx of C) { if (out) rec(out.bits, idx); mat[idx] = 0; } moved = true; continue; }
+      for (const idx of C) mark[idx] = 3;
+      let drop = 1e9;
+      for (const idx of C) { if (idx >= nxy && mark[idx - nxy] === 3) continue; let d = 0, q = idx - nxy; while (q >= 0 && (!mat[q] || mark[q] === 3)) { d++; q -= nxy; } if (d < drop) drop = d; if (!drop) break; }
+      for (const idx of C) mark[idx] = 2;
+      if (!drop) continue;                                     // apoiado em outro pedaço solto: resolve na próxima volta
+      moved = true; C.sort((a, b) => a - b);
+      const brk = drop >= 5, seed = (pr.id | 0) * 977 + (pr.settleN | 0) * 131 + it * 17, kept = [], bits = out ? [] : null;
+      for (const idx of C) { const to = idx - drop * nxy, m = mat[idx]; mat[idx] = 0;
+        let r = 0, g = 0, b = 0; if (C3) { r = C3[idx]; g = pr.cg[idx]; b = pr.cb[idx]; }
+        if (brk && (m === GLASS || SOFT[m] || h3(idx, it, 7, seed) < 0.3)) { if (bits) { propCenter(pr, to, P); bits.push(P[0], P[1], P[2], r, g, b); } continue; }
+        mat[to] = brk ? RUBBLE : m; if (C3) { const k = brk ? 0.78 : 1; C3[to] = r * k; pr.cg[to] = g * k; pr.cb[to] = b * k; } kept.push(to); }
+      if (out) out.falls.push({ idx: Int32Array.from(kept), drop: drop * PVS, bits });
+    }
+    if (!moved) break;
+    any = true; finish(pr);
+  }
+  if (any) { pr.settleN = (pr.settleN | 0) + 1; if (!pr.list.length) pr.gone = true; }
+  return any; }
+// tanque passando por dentro da casa: tira o que estiver na caixa dele acima do assoalho (o entulho baixo fica).
+// count: só conta o que está na frente [alvenaria, resto, entulho] sem mexer em nada
+function push(pr, x, y, h, hl, hw, count) {
+  const c = Math.cos(h), s = Math.sin(h), ext = Math.abs(c) * hl + Math.abs(s) * hw, eyt = Math.abs(s) * hl + Math.abs(c) * hw, P = PVS, { nx, ny, mat } = pr;
+  const i0 = Math.max(0, Math.floor((x - ext - pr.x0) / P)), i1 = Math.min(nx - 1, Math.floor((x + ext - pr.x0) / P)), j0 = Math.max(0, Math.floor((y - eyt - pr.y0) / P)), j1 = Math.min(ny - 1, Math.floor((y + eyt - pr.y0) / P));
+  const k1 = Math.min(pr.nz - 1, Math.floor(2.6 / P)), kr = Math.round(RUBBLE_Z / P), res = count ? [0, 0, 0] : [];
+  if (i0 > i1 || j0 > j1) return res; if (!count) own(pr);
+  for (let j = j0; j <= j1; j++) { const dy = pr.y0 + (j + .5) * P - y; for (let i = i0; i <= i1; i++) { const dx = pr.x0 + (i + .5) * P - x, u = dx * c + dy * s, v = -dx * s + dy * c;
+    if (u > hl || u < -hl || v > hw || v < -hw) continue;
+    for (let k = 1; k <= k1; k++) { const idx = (k * ny + j) * nx + i, m = mat[idx]; if (!m) continue; const low = (m === RUBBLE || m === DIRT) && k < kr;
+      if (count) { if (m === RUBBLE || m === DIRT) { res[2]++; continue; } if (HARD[m]) res[0]++; else res[1]++; continue; }
+      if (low) continue; if (!SOFT[m]) pr.solid--; mat[idx] = 0; res.push(idx); } } }
+  return res; }
+// janela inteira estilhaça
+function shatter(pr, w) { const W = pr.win && pr.win[w]; if (!W || W.broken) return []; W.broken = true; own(pr); const rem = [];
+  for (const idx of W.idx) if (pr.mat[idx] === GLASS) { pr.mat[idx] = 0; rem.push(idx); } return rem; }
+function winAt(pr, x, y, z, r) { if (!pr.win) return -1; r = r || 0.8; for (let w = 0; w < pr.win.length; w++) { const c = pr.win[w].c; if (pr.win[w].broken) continue;
+  if (Math.abs(c[0] - x) < r && Math.abs(c[1] - y) < r && Math.abs(c[2] - z) < r) return w; } return -1; }
+
 // ---------------------------------------------------------------- mapa
-function generate(seed, themeKey) {
+function generate(seed, themeKey, lite) { LITE = !!lite; try { return gen(seed, themeKey); } finally { LITE = false; } }
+function gen(seed, themeKey) {
   const T = THEMES[themeKey] || THEMES.kursk, R = mulberry32((seed >>> 0) || 1);
   const pick = a => a[(R() * a.length) | 0];
   const M = { seed, theme: themeKey in THEMES ? themeKey : 'kursk', name: T.name, size: SIZE, half: HALF, fields: [], roads: [], props: [], zone: { x: 0, y: 0, r: 30 },
@@ -467,16 +700,19 @@ function generate(seed, themeKey) {
   for (let v = 0; v < T.villages; v++) {
     const n = 3 + ((R() * 3) | 0); let x = vx[v] - n * 8;
     for (let h = 0; h < n; h++, x += 14 + R() * 5) {
-      const side = R() < 0.5 ? -1 : 1, w = 6 + R() * 3, d = 5 + R() * 2, along = R() < 0.7;
+      const side = R() < 0.5 ? -1 : 1, w = 7 + R() * 2.5, d = 5.4 + R() * 1.6, along = R() < 0.7;
       const cy = roadY(x) + side * (11 + R() * 5);
       const hw = (along ? w : d) / 2 + 0.6, hd = (along ? d : w) / 2 + 0.6;
       if (!free(x - hw, cy - hd, x + hw, cy + hd, 3) || roadDist(x, cy) < hd + 1) continue;
-      add(house(x, cy, w, d, along, T, ns()));
+      add(building(x, cy, w, d, along, along ? -side : (R() < 0.5 ? 1 : -1), T, ns(), false));
       // muro ou cerca no quintal, atrás da casa
       const yb = cy + side * (hd + 3.5), kind = T.roofKind === 'tile' ? 'wall' : 'fence', len = 9 + R() * 6;
       if (free(x - len / 2, yb - 0.4, x + len / 2, yb + 0.4, 0.5)) add(linear(kind, x - len / 2, yb, len, true, ns()));
       if (R() < 0.5) { const xs = x + (R() < 0.5 ? -1 : 1) * (len / 2), y0 = Math.min(yb, cy), y1 = Math.max(yb, cy);
         if (free(xs - 0.4, y0, xs + 0.4, y1, 0.3)) add(linear(kind, xs, y0, y1 - y0, false, ns())); }
+      // celeiro de pedra atrás do quintal (Normandia)
+      if (T.roofKind === 'tile' && R() < 0.5) { const bw = 10 + R() * 2, bd = 6 + R(), bx = x + (R() - 0.5) * 4, by = yb + side * (2.4 + bd / 2);
+        if (free(bx - bw / 2 - 0.5, by - bd / 2 - 0.5, bx + bw / 2 + 0.5, by + bd / 2 + 0.5, 1)) add(building(bx, by, bw, bd, true, -side, T, ns(), true)); }
       // carroça no quintal
       if (R() < 0.45) { const ox = x + (R() < 0.5 ? -1 : 1) * (hw + 3), oy = cy + side * 2, ax = R() < 0.5;
         if (free(ox - (ax ? 2.6 : 1), oy - (ax ? 1 : 2.6), ox + (ax ? 2.6 : 1), oy + (ax ? 1 : 2.6), 0.5)) add(cart(ox, oy, ax, R() < 0.5 ? 1 : -1, T.roofKind === 'thatch' && R() < 0.6, ns())); }
@@ -554,7 +790,7 @@ function obbHitsBox(cx, cy, h, hl, hw, b) { const c = Math.cos(h), s = Math.sin(
     for (const p of bp) { const d = p[0] * a[0] + p[1] * a[1]; b0 = Math.min(b0, d); b1 = Math.max(b1, d); } if (a1 < b0 || b1 < a0) return false; }
   return true; }
 
-return { PVS, SIZE, HALF, RES, OPAC, SOFT, BURN, RUBBLE_Z, MAT: { LEAF, TRUNK, WALL, TILE, HAY, WOOD, STONE, FLOOR, RUBBLE, THATCH, SAND, METAL, GLASS, RUBBER, DIRT, BRICK },
-  THEMES, generate, propAt, propCenter, propsAlong, rayBox, los, obbHitsBox, mulberry32, h3,
-  tunnel, crushBox, burn, flammableNear, collapse, fell, fallDir, craterRim, addVisual, reindex, own, ownColors };
+return { PVS, SIZE, HALF, RES, OPAC, SOFT, BURN, RUBBLE_Z, MAT: { LEAF, TRUNK, WALL, TILE, HAY, WOOD, STONE, FLOOR, RUBBLE, THATCH, SAND, METAL, GLASS, RUBBER, DIRT, BRICK, CLOTH },
+  HARD, THEMES, generate, propAt, propCenter, propsAlong, rayBox, los, obbHitsBox, mulberry32, h3,
+  tunnel, crushBox, burn, flammableNear, settle, push, shatter, winAt, fell, fallDir, craterRim, addVisual, reindex, own, ownColors };
 });

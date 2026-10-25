@@ -18,7 +18,7 @@ function start(msg, send, exitFn) {
   st = { msg, M, T, view: new RENDER.View(cv), tanks: new Map(), ciNext: 0, byCi: [], mySlot: msg.slot, team: msg.team, mode: msg.mode, names: msg.names || {},
     slots: Object.fromEntries(msg.tanks.map(t => [t.id, t])), me: null, myEnt: null, g: null, shells: new Map(), tracers: [], heat: new Set(),
     mouse: { x: 0, y: 0, in: false }, keys: {}, rmb: false, camOff: [0, 0], fireN: 0, repN: 0, sel: 0, aim: [0, 0, 0], hover: null, hoverT: 0,
-    offset: null, lastSnap: 0, feed: [], shake: 0, paused: false, spec: null, last: performance.now(), hudT: 0, mmT: 0, reloadLocal: 0, seenAt: new Map(), loadedPrev: null, dirty: [], falling: [] };
+    offset: null, lastSnap: 0, feed: [], shake: 0, paused: false, spec: null, last: performance.now(), hudT: 0, mmT: 0, reloadLocal: 0, seenAt: new Map(), loadedPrev: null, dirty: [], falling: [], drops: [] };
   st.zoom = 64 / 6.6 * st.view.GBcss; st.view.cam.S = st.zoom / st.view.PX;   // zoom em pixels de tela por metro
   st.mm = buildMinimapBase(M, T);
   $('#hudMode').textContent = msg.modeName + ' · ' + MAPGEN.THEMES[msg.map].short;
@@ -52,9 +52,13 @@ function tankOf(id) { return st.tanks.get(id); }
 function myTank() { return st.myEnt ? st.tanks.get(st.myEnt) : null; }
 function distTo(p) { const c = st.view.cam; return Math.hypot(p[0] - c.x, p[1] - c.y); }
 // pedaços que voam quando um objeto perde voxels (frac: parte dos voxels que vira pedaço; keep: ficam no chão)
-function propBits(pr, rem, sp, frac, keep) { if (!rem.length) return; const V = st.view, P = [0, 0, 0], n = Math.min(160, Math.ceil(rem.length * frac) + 6);
+function propBits(pr, rem, sp, frac, keep) { if (!rem.length) return; const V = st.view, P = [0, 0, 0], n = Math.min(90, Math.ceil(rem.length * frac) + 6);
   for (let q = 0; q < n; q++) { const idx = rem[(Math.random() * rem.length) | 0]; MAPGEN.propCenter(pr, idx, P); const k = 0.72 + Math.random() * 0.2;
     V.chunk(P.slice(), [pr.cr[idx] * k, pr.cg[idx] * k, pr.cb[idx] * k], sp * (0.4 + Math.random() * 0.6), 1 + Math.random() * 1.5, keep || Math.random() < 0.5); } }
+// pedaços soltos de uma casa (bits = [x,y,z,r,g,b,...]): parte voa, parte fica no chão
+function spawnBits(bits, frac) { const V = st.view, n = bits.length / 6; if (!n) return; const m = Math.min(140, Math.ceil(n * frac));
+  for (let c = 0; c < m; c++) { const o = ((Math.random() * n) | 0) * 6, k = 0.62 + Math.random() * 0.15; V.chunk([bits[o], bits[o + 1], bits[o + 2]], [bits[o + 3] * k, bits[o + 4] * k, bits[o + 5] * k], 0.8, 1 + Math.random(), Math.random() < 0.5); }
+  for (let q = 0; q < n; q += Math.max(1, (n / 6) | 0)) { const o = q * 6; V.dust([bits[o], bits[o + 1], bits[o + 2]], 6, [150, 140, 120]); } }
 function markDirty(pr) { if (!pr.dirty) { pr.dirty = true; st.dirty.push(pr); } }
 // árvore caindo: guarda os voxels de pé para animar a queda
 function startFall(pr, dir) { if (!pr.R) RENDER.prepProp(pr); const ux = [1, 0, -1, 0][dir], uy = [0, 1, 0, -1][dir], R = pr.R, vis = R.vis, sa = [], ta = [], z = [], col = [], tr = pr.trunkR || 0.15;
@@ -111,9 +115,22 @@ function handleEv(e) {
       propBits(pr, rem, 0.5, 0.04); if (rem.length && Math.random() < 0.25) AUDIO.crunch(distTo([e[2], e[3]])); markDirty(pr); break; }
     case 'pd': { const pr = M.props[e[1]]; if (!pr || pr.fallen) break; startFall(pr, e[2]); MAPGEN.fell(M, pr, e[2]); RENDER.prepProp(pr); pr.dirty = false; RENDER.reshadow(T, pr);
       AUDIO.crunch(distTo([pr.cx, pr.cy])); break; }
-    case 'pc': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.collapse(pr); propBits(pr, rem, 1.6, 0.03, true);
-      for (let i = 0; i < 10; i++) V.dust([pr.cx + (Math.random() - .5) * 7, pr.cy + (Math.random() - .5) * 6, 0.6 + Math.random()], 14, [150, 140, 120]);
-      AUDIO.boom(distTo([pr.cx, pr.cy]), false); st.shake = Math.max(st.shake, distTo([pr.cx, pr.cy]) < 40 ? 0.4 : 0); RENDER.prepProp(pr); pr.dirty = false; RENDER.reshadow(T, pr); break; }
+    // tanque atravessando a casa
+    case 'pp': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.push(pr, e[2], e[3], e[4], e[5], e[6]); if (!rem.length) break; const P = [0, 0, 0];
+      for (let i = 0; i < rem.length; i += 4) { const idx = rem[i]; MAPGEN.propCenter(pr, idx, P); RENDER.paint(T, P[0] + (Math.random() - .5) * 0.6, P[1] + (Math.random() - .5) * 0.6, [pr.cr[idx] * 0.8, pr.cg[idx] * 0.8, pr.cb[idx] * 0.8], 0.5); }
+      propBits(pr, rem, 0.7, 0.08, true); if (Math.random() < 0.3) { AUDIO.crunch(distTo([e[2], e[3]])); MAPGEN.propCenter(pr, rem[0], P); V.dust(P, 4, [150, 140, 120]); } markDirty(pr); break; }
+    // janela estilhaçada
+    case 'pg': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.shatter(pr, e[2]); const P = [0, 0, 0];
+      for (const idx of rem) { if (Math.random() < 0.45) continue; MAPGEN.propCenter(pr, idx, P); const c = Math.random() < 0.3 ? [228, 236, 240] : [150, 176, 190]; V.chunk(P.slice(), c, 1.2, 0.45, Math.random() < 0.5); }
+      if (rem.length) { MAPGEN.propCenter(pr, rem[0], P); AUDIO.glass(distTo(P)); } markDirty(pr); break; }
+    // casa assentando: o que perdeu apoio cai
+    case 'ps': { const pr = M.props[e[1]]; if (!pr) break; const out = { bits: [], falls: [] }; if (!MAPGEN.settle(pr, out)) break;
+      spawnBits(out.bits, 0.6); if (!pr.hide) pr.hide = new Uint8Array(pr.n);
+      for (const f of out.falls) { const n = f.idx.length, xs = new Float32Array(n), ys = new Float32Array(n), zs = new Float32Array(n), cols = new Uint32Array(n), P = [0, 0, 0];
+        for (let q = 0; q < n; q++) { const idx = f.idx[q]; pr.hide[idx] = 1; MAPGEN.propCenter(pr, idx, P); xs[q] = P[0]; ys[q] = P[1]; zs[q] = P[2]; const k = 0.8 + 0.2 * MAPGEN.h3(idx, 0, 0, 5);
+          cols[q] = RENDER.pack(pr.cr[idx] * k, pr.cg[idx] * k, pr.cb[idx] * k); }
+        st.drops.push({ pr, idx: f.idx, xs, ys, zs, cols, n, drop: f.drop, bits: f.bits, t: 0, dur: Math.sqrt(2 * f.drop / G) + 0.04 }); }
+      if (pr.fire) firePoints(pr); markDirty(pr); break; }
     case 'pi': { const pr = M.props[e[1]]; if (!pr) break; pr.fire = { x: e[2], y: e[3], z: e[4], r: 0.5, pts: [] }; V.fireball([e[2], e[3], e[4]], 0.3, false); firePoints(pr); break; }
     case 'pb': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.burn(pr, e[2], e[3], e[4], e[5], e[6]);
       if (!pr.fire) pr.fire = { x: e[2], y: e[3], z: e[4], r: e[5], pts: [] }; pr.fire.r = e[5]; char(pr, e[2], e[3], e[4], e[5] + 0.4);
@@ -226,7 +243,14 @@ function frame(nowMs) {
   for (const ct of drawn) { V.shadowGrid(ct.tk.GH, ct.tk.TH); V.shadowGrid(ct.tk.GT, ct.tk.TT); }
   V.applyShadow();
   for (const pr of st.dirty) { RENDER.refreshProp(pr); RENDER.reshadow(st.T, pr); pr.dirty = false; if (pr.fire) firePoints(pr); } st.dirty.length = 0;
-  for (const pr of st.M.props) if (!pr.gone) { const fl = pr.falling; if (!fl) V.splatProp(pr, 512 + pr.id); }
+  // de perto, as casas perto do centro da tela aparecem em corte (sem telhado nem andar de cima)
+  const cutR = st.zoom > 20 * V.GBcss ? 26 : 0;
+  for (const pr of st.M.props) if (!pr.gone) { const fl = pr.falling; if (!fl) V.splatProp(pr, 512 + pr.id, cutR && pr.struct && Math.abs(pr.cx - cam.x) < cutR && Math.abs(pr.cy - cam.y) < cutR); }
+  for (let i = st.drops.length - 1; i >= 0; i--) { const f = st.drops[i]; f.t += dt; const u = Math.min(1, f.t / f.dur);
+    if (u < 1) { V.splatDrop(f, f.drop * (1 - u * u)); continue; }
+    st.drops.splice(i, 1); const pr = f.pr; if (pr.hide) { for (const idx of f.idx) pr.hide[idx] = 0; if (!st.drops.some(d => d.pr === pr)) pr.hide = null; }
+    if (f.bits) spawnBits(f.bits, 0.35); const P = [f.xs[0], f.ys[0], f.zs[0]], d = distTo(P);
+    if (f.n > 400) { AUDIO.boom(d, false); st.shake = Math.max(st.shake, d < 40 ? 0.35 : 0); for (let q = 0; q < 8; q++) { const j = (Math.random() * f.n) | 0; V.dust([f.xs[j], f.ys[j], f.zs[j]], 12, [150, 140, 120]); } } else AUDIO.thud(d); }
   for (let i = st.falling.length - 1; i >= 0; i--) { const f = st.falling[i]; f.t += dt; const u = Math.min(1, f.t / f.dur); f.pr.falling = u < 1;
     if (u < 1) V.splatFalling(f, 0, u); else { st.falling.splice(i, 1); V.dust([f.cx + f.ux * 4, f.cy + f.uy * 4, 0.3], 20, [110, 120, 80]); AUDIO.thud(distTo([f.cx, f.cy])); } }
   V.drawLitter();
@@ -372,7 +396,7 @@ function buildMinimapBase(M, T) { const N = 200, c = document.createElement('can
   for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const tx = Math.floor(i / N * T.w), ty = Math.floor((N - 1 - j) / N * T.h); d[j * N + i] = T.base[ty * T.w + tx]; }
   x.putImageData(img, 0, 0);
   for (const pr of M.props) { const b = pr.bb, s = N / M.size, X = (b[0] + M.half) * s, Y = N - (b[3] + M.half) * s, w = Math.max(1, (b[2] - b[0]) * s), h = Math.max(1, (b[3] - b[1]) * s);
-    x.fillStyle = pr.kind === 'house' ? '#4a3c34' : pr.kind === 'tree' ? 'rgba(40,70,36,.85)' : pr.kind === 'hedge' ? 'rgba(46,80,40,.8)' : 'rgba(90,84,70,.8)'; x.fillRect(X, Y, w, h); }
+    x.fillStyle = pr.struct ? '#4a3c34' : pr.kind === 'tree' ? 'rgba(40,70,36,.85)' : pr.kind === 'hedge' ? 'rgba(46,80,40,.8)' : 'rgba(90,84,70,.8)'; x.fillRect(X, Y, w, h); }
   return c; }
 function minimap() { const c = $('#minimap'), x = c.getContext('2d'), N = c.width, M = st.M, s = N / M.size, P = (wx, wy) => [(wx + M.half) * s, N - (wy + M.half) * s];
   x.drawImage(st.mm, 0, 0, N, N);

@@ -18,7 +18,11 @@ Não precisa de Radmin nem de servidor. Quem cria a sala hospeda a partida no pr
 - Mata-mata infinito: renasce em 8 s, vence quem chegar ao número de abates.
 
 ## Cenário destrutível
-Casas, árvores, muros, cercas, sebes, palheiros, carroças, caminhões abandonados, sacos de areia e postes são voxels de 10 cm, como os tanques. Tiro abre buraco, HE derruba árvore e poste, casa desaba e vira um monte de entulho que o tanque atravessa devagar, palha e feno pegam fogo, e HE deixa cratera que também freia o tanque. O mapa continua plano.
+Casas, árvores, muros, cercas, sebes, palheiros, carroças, caminhões abandonados, sacos de areia e postes são voxels de 10 cm, como os tanques. Tiro abre buraco, HE derruba árvore e poste, palha e feno pegam fogo, e HE deixa cratera que freia o tanque. O mapa continua plano.
+
+As casas são geradas na hora: isbás de barro ou de toras em Kursk, casas de pedra e celeiros na Normandia, com um ou dois andares, cômodos, paredes internas, portas, escada, assoalho e móveis (cama, mesa, cadeiras, armário, fogão, prateleiras, quadros, tapete). Dá para ver e atirar pelas janelas, e o vidro estilhaça. A estrutura é de verdade: o que perde o apoio cai e vira entulho, e o fogo come o assoalho e os móveis. O tanque atravessa parede devagar (pedra mais devagar que madeira). De perto, as casas perto do centro da tela aparecem em corte, sem telhado. Cada casa guarda o mapa dos cômodos, portas, janelas e escadas (`pr.nav`), pronto para tropas a pé no futuro.
+
+De perto o chão ganha detalhe: tufos de grama, fileiras de lavoura, torrões e pedrinhas na estrada, sem perder o pixel.
 
 ## Onde mexer
 - `shared/sim.js`: tanques (blindagem, módulos, munições, mobilidade) e balística.

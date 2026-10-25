@@ -12,10 +12,10 @@ const MODES = { dm: 'Mata-mata', dom: 'Dominação', tdm: 'Mata-mata infinito' }
 class Match {
   constructor(room, send) {
     this.room = room; this.send = send;
-    this.map = MAP.generate(room.seed, room.map);
+    this.map = MAP.generate(room.seed, room.map, true);
     this.mode = room.mode; this.limit = room.time * 60; this.killGoal = room.kills;
     this.t = 0; this.tick = 0; this.ev = []; this.ents = []; this.shells = []; this.nextEnt = 1; this.nextShell = 1;
-    this.score = [0, 0]; this.zone = { prog: 0, owner: -1 }; this.over = false; this.craters = []; this.fires = [];
+    this.score = [0, 0]; this.zone = { prog: 0, owner: -1 }; this.over = false; this.craters = []; this.fires = []; this.settleQ = new Set();
     const perTeam = [0, 0];
     this.slots = room.tanks.map(rt => ({ id: rt.id, team: rt.team, type: rt.type, bot: rt.bot, driver: rt.driver, gunner: rt.gunner,
       ammo: rt.ammo.slice(), spawnI: perTeam[rt.team]++ % 4, ent: null, respawnAt: -1,
@@ -74,6 +74,7 @@ class Match {
     }
     for (const s of this.shells) this.stepShell(s, dt);
     this.stepFires(dt);
+    if (this.tick % 6 === 0) this.settleAll();
     this.shells = this.shells.filter(s => s.alive);
     if (this.tick % 5 === 0) this.visibility();
     this.rules(dt);
@@ -85,7 +86,7 @@ class Match {
     let thr = I.thr, st = I.steer; if (ds.both || tk.repair && tk.repair.kind === 'fix') { thr = 0; st = 0; }
     const eng = tk.mk.engine; let pw = eng.hp < eng.max * 0.5 ? 0.55 : 1;
     if ((tk.mk.radiator && tk.mk.radiator.dead) || (tk.mk.clutch && tk.mk.clutch.dead) || (tk.mk.fans && tk.mk.fans.dead)) pw *= 0.75;
-    pw *= this.slowAt(tk.x, tk.y, tk.h, g);
+    pw *= this.slowAt(tk.x, tk.y, tk.h, g); if (e.rub) pw *= 0.55;
     let nx = tk.x, ny = tk.y, nh = tk.h;
     if (ds.L || ds.R) {
       e.v = approach(e.v, 0, 5 * dt);
@@ -104,6 +105,9 @@ class Match {
       nh = tk.h + st * rate * dt; nx = tk.x + Math.cos(nh) * e.v * dt; ny = tk.y + Math.sin(nh) * e.v * dt;
     }
     if (nx === tk.x && ny === tk.y && nh === tk.h) return;
+    // dentro de casa: parede de alvenaria só cede bem devagar, madeira e móveis um pouco mais rápido
+    { const pr = this.pressing(e, nx, ny, nh); if (pr) { const cap = pr[0] > 6 ? 0.35 : pr[1] > 6 ? 1.1 : 1e9, sp = Math.abs(e.v);
+      if (sp > cap) { const k = cap / sp; nx = tk.x + (nx - tk.x) * k; ny = tk.y + (ny - tk.y) * k; nh = tk.h + wrap(nh - tk.h) * Math.max(k, 0.3); e.v *= k; } } }
     if (this.blocked(e, nx, ny, nh)) {
       if (!this.blocked(e, tk.x, tk.y, nh)) { nx = tk.x; ny = tk.y; } else { nx = tk.x; ny = tk.y; nh = tk.h; }
       e.v *= -0.2;
@@ -120,6 +124,11 @@ class Match {
       if (obbOverlap(x, y, h, hl, hw, t.x, t.y, t.h, t.game.len / 2, t.game.wid / 2)) return true; }
     return false;
   }
+  // o que da casa está dentro da caixa do tanque: [alvenaria, resto], e se está passando por cima de entulho
+  pressing(e, x, y, h) { const g = e.tank.game, hl = g.len / 2 + 0.05, hw = g.wid / 2; let a = 0, b = 0, c = 0, any = false;
+    for (const id of MAP.propsAlong(this.map, x - 5, y - 5, x + 5, y + 5)) { const pr = this.map.props[id]; if (!pr.struct || pr.gone || !MAP.obbHitsBox(x, y, h, hl, hw, pr.foot)) continue;
+      const n = MAP.push(pr, x, y, h, hl, hw, true); a += n[0]; b += n[1]; c += n[2]; any = true; }
+    e.rub = c > 60; return any && (a || b) ? [a, b] : null; }
   // entulho e cratera deixam o tanque mais lento
   slowAt(x, y, h, g) { let f = 1;
     for (const c of this.craters) { const dx = x - c[0], dy = y - c[1]; if (dx * dx + dy * dy < c[2] * c[2]) { f = 0.6; break; } }
@@ -128,8 +137,10 @@ class Match {
     return f; }
   crush(e, x, y, h) {
     const g = e.tank.game, hl = r2(g.len / 2 + 0.15), hw = r2(g.wid / 2 + 0.1), xq = r2(x), yq = r2(y), hq = r3(h);
-    for (const id of MAP.propsAlong(this.map, x - 5, y - 5, x + 5, y + 5)) { const pr = this.map.props[id]; if (!pr.crush || pr.gone) continue;
+    for (const id of MAP.propsAlong(this.map, x - 5, y - 5, x + 5, y + 5)) { const pr = this.map.props[id]; if (!(pr.crush || pr.struct) || pr.gone) continue;
       if (!MAP.obbHitsBox(x, y, h, hl, hw, pr.foot)) continue;
+      if (pr.struct) { const hl2 = r2(g.len / 2 + 0.05), hw2 = r2(g.wid / 2), rem = MAP.push(pr, xq, yq, hq, hl2, hw2);
+        if (rem.length) { this.ev.push(['pp', pr.id, xq, yq, hq, hl2, hw2]); this.settleQ.add(pr); } continue; }
       if ((pr.kind === 'tree' || pr.kind === 'pole') && !pr.fallen) { this.fellProp(pr, Math.cos(h), Math.sin(h)); e.v *= pr.kind === 'pole' ? 0.95 : 0.7; continue; }
       const zlo = pr.rubble ? MAP.RUBBLE_Z : 0, rem = MAP.crushBox(pr, xq, yq, hq, hl, hw, zlo, 2.6);
       if (rem.length) { this.ev.push(['pq', pr.id, xq, yq, hq, hl, hw, zlo]); e.v *= pr.kind === 'sand' || pr.kind === 'cart' ? 0.88 : 0.95; }
@@ -231,6 +242,8 @@ class Match {
     for (let t = t0; t <= Math.min(t1, t0 + 40); t += 0.05) {
       p[0] = p0[0] + dn[0] * t; p[1] = p0[1] + dn[1] * t; p[2] = p0[2] + dn[2] * t; if (p[2] < 0) break;
       const idx = MAP.propAt(pr, p[0], p[1], p[2]); if (idx < 0 || idx === last) continue; last = idx; const m = pr.mat[idx]; if (!m) continue;
+      // vidro: a janela inteira estilhaça e o projétil segue
+      if (m === MAP.MAT.GLASS) { this.breakGlass(pr, MAP.winAt(pr, p[0], p[1], p[2], 0.7)); pen -= MAP.RES[m]; s.loss += MAP.RES[m]; continue; }
       if (MAP.SOFT[m]) { hole(PL, RL); pen -= MAP.RES[m]; s.loss += MAP.RES[m]; if (pen <= 0) { stopAt = p.slice(); break; } continue; }
       if (A.t === 'HE' || A.t === 'HEAT') { stopAt = p.slice(); break; }
       // tronco: o perfurante só fura (quem derruba árvore é a explosão)
@@ -255,13 +268,14 @@ class Match {
       // a explosão perto do tronco derruba árvore e poste
       if ((pr.kind === 'tree' || pr.kind === 'pole') && !pr.fallen && Math.hypot(pr.cx - p[0], pr.cy - p[1]) < r + 0.8 && p[2] < (pr.kind === 'pole' ? 7 : 4)) {
         this.fellProp(pr, pr.cx - p[0] || 1, pr.cy - p[1]); continue; }
+      if (pr.win) for (let w = 0; w < pr.win.length; w++) { const W = pr.win[w], c = W.c; if (!W.broken && (c[0] - p[0]) ** 2 + (c[1] - p[1]) ** 2 + (c[2] - p[2]) ** 2 < (r * 2.2 + 1.6) ** 2) this.breakGlass(pr, w); }
       const rem = MAP.tunnel(pr, r, q); if (rem.length) { this.ev.push(['pt', pr.id, r, q]); this.checkCollapse(pr); }
       if (fire && !pr.fire && !pr.gone) this.maybeIgnite(pr, q, r); } }
   // ---------------------------------------------------------------- fogo no cenário
   maybeIgnite(pr, q, r) {
     if (!MAP.flammableNear(pr, q[0], q[1], q[2], r + 0.6)) return;
-    const chance = { hay: 0.9, house: 0.6, cart: 0.5, fence: 0.35, tree: 0.3, hedge: 0.25 }[pr.kind] || 0.2; if (Math.random() > chance) return;
-    const maxR = { hay: 2.6, house: 8, tree: 3.8, hedge: 3, cart: 2.5 }[pr.kind] || 2.2;
+    const chance = { hay: 0.9, barn: 0.8, house: 0.6, cart: 0.5, fence: 0.35, tree: 0.3, hedge: 0.25 }[pr.kind] || 0.2; if (Math.random() > chance) return;
+    const maxR = { hay: 2.6, house: 8, barn: 9, tree: 3.8, hedge: 3, cart: 2.5 }[pr.kind] || 2.2;
     pr.fire = { x: q[0], y: q[1], z: q[2], r: 0.5, maxR, t: 0, next: 0.6, idle: 0, life: 22 + Math.random() * 12, seed: (Math.random() * 1e6) | 0, n: 0 };
     this.fires.push(pr); this.ev.push(['pi', pr.id, q[0], q[1], q[2]]); }
   stepFires(dt) {
@@ -273,10 +287,11 @@ class Match {
       if (f.t > f.life || f.idle >= 3) this.putOut(pr); }
     this.fires = this.fires.filter(pr => pr.fire); }
   putOut(pr) { if (!pr.fire) return; pr.fire = null; this.ev.push(['pf', pr.id]); }
-  checkCollapse(pr) {
-    if (pr.kind !== 'house' || pr.collapsed || pr.solid > pr.solid0 * 0.72) return;
-    MAP.collapse(pr); this.ev.push(['pc', pr.id]);
-  }
+  // casa: o que perdeu apoio cai (a conta é feita aos poucos, juntando os estragos de alguns ticks)
+  checkCollapse(pr) { if (pr.struct) this.settleQ.add(pr); }
+  settleAll() { for (const pr of this.settleQ) if (MAP.settle(pr)) this.ev.push(['ps', pr.id]);
+    this.settleQ.clear(); }
+  breakGlass(pr, w) { if (w < 0 || !MAP.shatter(pr, w).length) return; this.ev.push(['pg', pr.id, w]); }
   // ---------------------------------------------------------------- visão
   visibility() {
     for (const e of this.ents) e.visTo = [e.team === 0 || e.tank.destroyed, e.team === 1 || e.tank.destroyed];
