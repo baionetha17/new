@@ -11,7 +11,8 @@ const store = { get(k, d) { try { const v = localStorage.getItem(k); return v ==
 // Não há servidor: quem cria a sala roda o servidor num Web Worker (host/server.js) e os amigos
 // se conectam direto no navegador dele pelo WebRTC (PeerJS). Fora de uma sala, a tela fala com o
 // servidor local, que fica vazio até alguém criar sala.
-const PEER_PREFIX = 'tanque-x1-sala-';
+// a prévia (pasta /previa) tem salas separadas, para não misturar versões diferentes do jogo
+const PEER_PREFIX = 'tanque-x1-sala-' + (/\/previa\//.test(location.pathname) ? 'previa-' : '');
 const PEER_OPTS = { debug: 1, config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }, { urls: 'stun:stun.cloudflare.com:3478' }] } };
 let worker = null, peer = null, remote = null, hostConns = new Map(), nextConn = 1, joining = null;
 function startWorker() {
