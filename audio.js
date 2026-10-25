@@ -32,6 +32,10 @@ const AUDIO = (() => {
     mg(d, fast) { const a = att(d), dl = delayOf(d); burst(0.05, fast ? 3200 : 2600, 400, 0.32 * a, 3, dl); tone(0.03, fast ? 180 : 140, 80, 0.2 * a, 'square', dl); },
     ping(d) { const a = att(d); tone(0.08, 2600 + Math.random() * 1200, 1500, 0.06 * a, 'sine', delayOf(d)); },
     crunch(d) { const a = att(d); burst(0.2, 1500, 300, 0.25 * a, 1.5, delayOf(d)); },
+    // galhos e folhas sendo esmagados: farfalhar com estalos secos espalhados
+    brush(d, big) { const a = att(d), dl = delayOf(d); burst(big ? 0.5 : 0.3, 3800, 900, 0.16 * a, 0.9, dl);
+      for (let i = 0, n = big ? 6 : 3; i < n; i++) burst(0.025 + Math.random() * 0.03, 5200 + Math.random() * 2500, 1500, (0.22 + Math.random() * 0.2) * a, 2.5, dl + Math.random() * (big ? 0.45 : 0.25));
+      if (big) { burst(0.12, 900, 120, 0.4 * a, 1.2, dl + 0.05); tone(0.18, 140, 60, 0.18 * a, 'sine', dl + 0.05); } },
     reload() { tone(0.06, 900, 700, 0.12, 'square'); tone(0.08, 500, 400, 0.12, 'square', 0.09); },
     engine(on, v) { if (!ac) return;
       if (!eng && on) { const o = ac.createOscillator(); o.type = 'sawtooth'; const o2 = ac.createOscillator(); o2.type = 'square'; const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 220; const g = ac.createGain(); g.gain.value = 0;

@@ -31,11 +31,13 @@ const THEMES = {
   kursk: { name: 'Prokhorovka, Kursk (1943)', short: 'Kursk',
     crops: [[176, 160, 96], [190, 172, 104], [122, 128, 72], [112, 94, 66], [98, 118, 62], [150, 140, 80]],
     road: [138, 116, 86], wall: [214, 208, 192], roof: [[158, 128, 74], [142, 112, 62]], roofKind: 'thatch', shutter: [[70, 110, 150], [92, 132, 92]],
-    truck: [[84, 92, 58], [78, 84, 56]], trees: ['birch', 'birch', 'oak', 'birch'], belts: 0.32, hedges: 0, villages: 2, hay: 22, loose: 16 },
+    truck: [[84, 92, 58], [78, 84, 56]], trees: ['birch', 'birch', 'oak', 'birch'], belts: 0.32, hedges: 0, villages: 2, hay: 22, loose: 16,
+    woods: { n: 3, trees: ['birch', 'birch', 'birch', 'oak'], r: [17, 27] } },
   normandia: { name: 'Bocage da Normandia (1944)', short: 'Normandia',
     crops: [[92, 124, 62], [104, 134, 68], [112, 94, 70], [170, 155, 95], [86, 116, 58], [120, 140, 74]],
     road: [128, 112, 90], wall: [176, 166, 144], roof: [[78, 82, 92], [150, 82, 58]], roofKind: 'tile', shutter: [[64, 96, 70], [120, 76, 60]],
-    truck: [[96, 98, 94], [150, 140, 96]], trees: ['oak', 'oak', 'apple', 'pine'], belts: 0.12, hedges: 0.36, villages: 2, hay: 8, loose: 22 }
+    truck: [[96, 98, 94], [150, 140, 96]], trees: ['oak', 'oak', 'apple', 'pine'], belts: 0.12, hedges: 0.36, villages: 2, hay: 8, loose: 22,
+    woods: { n: 3, trees: ['oak', 'oak', 'pine', 'birch'], r: [16, 25] } }
 };
 
 // ---------------------------------------------------------------- grade de voxels de um objeto
@@ -71,12 +73,13 @@ function treeTemplate(type, variant) {
   let tr, cr, crz, cz, top, leaf, bark;
   if (type === 'birch') { tr = 0.13; cr = 1.6 + r() * 0.6; crz = 2.7 + r() * 0.7; cz = 5.2 + r() * 1.0; top = cz + crz; leaf = [108, 150, 64]; bark = [226, 226, 216]; }
   else if (type === 'pine') { tr = 0.19; cr = 1.9 + r() * 0.4; crz = 0; cz = 1.8; top = 8.8 + r() * 2.2; leaf = [44, 80, 54]; bark = [104, 74, 52]; }
+  else if (type === 'sapling') { tr = 0.05; cr = 0.55 + r() * 0.35; crz = 0.6 + r() * 0.35; cz = 1.5 + r() * 0.8; top = cz + crz; leaf = r() < 0.5 ? [98, 142, 60] : [80, 124, 54]; bark = [120, 100, 76]; }
   else if (type === 'apple') { tr = 0.15; cr = 1.5 + r() * 0.4; crz = 1.2 + r() * 0.3; cz = 2.6 + r() * 0.3; top = cz + crz; leaf = [88, 130, 58]; bark = [92, 74, 56]; }
   else { tr = 0.28; cr = 2.3 + r() * 0.7; crz = 2.0 + r() * 0.5; cz = 4.7 + r() * 0.8; top = cz + crz; leaf = [64, 104, 48]; bark = [86, 70, 54]; }
   const half = Math.ceil((cr + 0.5) / PVS), nx = half * 2, nz = Math.ceil((top + 0.4) / PVS);
   const pr = newProp('tree', -half * PVS, -half * PVS, nx, nx, nz);
   // galhos: segmentos do tronco até a copa
-  const br = []; const nb = type === 'pine' ? 0 : 5 + ((r() * 3) | 0);
+  const br = []; const nb = type === 'pine' ? 0 : type === 'sapling' ? 2 : 5 + ((r() * 3) | 0);
   for (let b = 0; b < nb; b++) { const a = r() * Math.PI * 2, z0 = cz - crz * (0.3 + r() * 0.5), L = cr * (0.6 + r() * 0.3), up = crz * (0.2 + r() * 0.5);
     br.push([0, 0, z0, Math.cos(a) * L, Math.sin(a) * L, z0 + up, 0.05 + r() * 0.04]); }
   const segD2 = (px, py, pz, g) => { const ex = g[3] - g[0], ey = g[4] - g[1], ez = g[5] - g[2], L2 = ex * ex + ey * ey + ez * ez;
@@ -101,12 +104,12 @@ function treeTemplate(type, variant) {
       const c = fruit && n > 0.985 ? [196, 58, 40] : mix(leaf, shade); put(pr, i, j, k, LEAF, c, 30, s); }
   }
   hollow(pr); finish(pr);
-  pr.tree = type; pr.crownR = cr; pr.trunkR = tr;
+  pr.tree = type; pr.crownR = cr; pr.trunkR = tr; pr.cutK = type === 'sapling' ? 0 : 20;   // copa acima de 2 m fica transparente sobre um tanque
   return (TREE_T[key] = pr);
 }
 function tree(x, y, type, s) { return instance(treeTemplate(type, s & 3), x, y, { crush: true, foot: [x - 0.5, y - 0.5, x + 0.5, y + 0.5] }); }
 function instance(t, x, y, extra) {
-  const pr = { kind: t.kind, tree: t.tree, crownR: t.crownR, trunkR: t.trunkR, x0: x + t.x0, y0: y + t.y0, z0: 0, nx: t.nx, ny: t.ny, nz: t.nz, n: t.n,
+  const pr = { kind: t.kind, tree: t.tree, crownR: t.crownR, trunkR: t.trunkR, cutK: t.cutK, x0: x + t.x0, y0: y + t.y0, z0: 0, nx: t.nx, ny: t.ny, nz: t.nz, n: t.n,
     mat: t.mat, cr: t.cr, cg: t.cg, cb: t.cb, list: t.list, solid0: t.solid0, solid: t.solid, shared: true, sharedCol: true, tpl: t, ver: 1, cx: x, cy: y };
   pr.bb = [pr.x0, pr.y0, pr.x0 + t.nx * PVS, pr.y0 + t.ny * PVS, t.bb[4]];
   return Object.assign(pr, extra); }
@@ -703,6 +706,19 @@ function shatter(pr, w) { const W = pr.win && pr.win[w]; if (!W || W.broken) ret
 function winAt(pr, x, y, z, r) { if (!pr.win) return -1; r = r || 0.8; for (let w = 0; w < pr.win.length; w++) { const c = pr.win[w].c; if (pr.win[w].broken) continue;
   if (Math.abs(c[0] - x) < r && Math.abs(c[1] - y) < r && Math.abs(c[2] - z) < r) return w; } return -1; }
 
+// ---------------------------------------------------------------- bosques
+// contorno irregular: raio que varia suave com o ângulo. Devolve quantos metros para dentro da borda (negativo = fora)
+function woodEdge(W, x, y) { const dx = x - W.x, dy = y - W.y, d = Math.hypot(dx, dy); if (d > W.r * 1.3) return -1;
+  const a = Math.atan2(dy, dx), k = 0.72 + 0.5 * vn3(Math.cos(a) * 1.6 + 5, Math.sin(a) * 1.6 + 5, W.s * 0.01, W.s); return W.r * k - d; }
+// trigo: campo com cor de trigo maduro, longe da borda (lá é grama), da estrada e dos bosques (a mesma conta do desenho do chão)
+const isWheatCol = c => !(c[1] > c[0] * 1.08) && c[0] > 160 && c[1] > 145;
+function wheatAt(M, x, y) { let f = null; for (const q of M.fields) if (x >= q.x0 && x < q.x1 && y >= q.y0 && y < q.y1) { f = q; break; }
+  if (!f || !isWheatCol(f.col) || Math.min(x - f.x0, f.x1 - x, y - f.y0, f.y1 - y) < 0.9 || woodAt(M, x, y)) return false;
+  for (const rd of M.roads) for (let i = 1; i < rd.pts.length; i++) { const a = rd.pts[i - 1], b = rd.pts[i], ex = b[0] - a[0], ey = b[1] - a[1], t = Math.max(0, Math.min(1, ((x - a[0]) * ex + (y - a[1]) * ey) / (ex * ex + ey * ey)));
+    if (Math.hypot(x - a[0] - ex * t, y - a[1] - ey * t) < rd.w / 2 + 1) return false; }
+  return true; }
+function woodAt(M, x, y) { if (!M.woods) return null; for (const W of M.woods) if (woodEdge(W, x, y) >= 0) return W; return null; }
+
 // ---------------------------------------------------------------- mapa
 function generate(seed, themeKey, lite) { LITE = !!lite; try { return gen(seed, themeKey); } finally { LITE = false; } }
 function gen(seed, themeKey) {
@@ -776,6 +792,17 @@ function gen(seed, themeKey) {
   // postes de telégrafo ao longo da estrada principal
   { const side = R() < 0.5 ? -1 : 1; for (let x = -HALF + 20; x < HALF - 20; x += 32 + R() * 8) { const y = roadY(x) + side * 6.2;
     if (free(x - 0.3, y - 0.3, x + 0.3, y + 0.3, 0.6)) add(pole(x, y, ns())); } }
+  // bosques: manchas de mata fechada com árvores, mudas e arbustos; o chão vira folhas e capim alto (desenho)
+  M.woods = [];
+  for (let i = 0, tries = 0; i < T.woods.n && tries < 120; tries++) { const W = T.woods, r = W.r[0] + R() * (W.r[1] - W.r[0]), x = (R() - 0.5) * 400, y = (R() - 0.5) * 340;
+    if (roadDist(x, y) < r + 5 || !free(x - r * 1.15, y - r * 1.15, x + r * 1.15, y + r * 1.15, 4)) continue;
+    const wd = { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, r: Math.round(r * 10) / 10, s: (R() * 1000) | 0 }; M.woods.push(wd); i++;
+    for (let gy = y - r * 1.15; gy < y + r * 1.15; gy += 3.4) for (let gx = x - r * 1.15; gx < x + r * 1.15; gx += 3.4) {
+      const tx = gx + (R() - 0.5) * 2.6, ty = gy + (R() - 0.5) * 2.6, e = woodEdge(wd, tx, ty); if (e < 0 || roadDist(tx, ty) < 3) continue;
+      const q = R(), edge = e < 3.5;
+      if (q < (edge ? 0.3 : 0.58)) { if (free(tx - 0.6, ty - 0.6, tx + 0.6, ty + 0.6, 0.3)) add(tree(tx, ty, pick(W.trees), ns())); }
+      else if (q < (edge ? 0.62 : 0.82)) { if (free(tx - 0.3, ty - 0.3, tx + 0.3, ty + 0.3, 0.2)) add(tree(tx, ty, 'sapling', ns())); }
+      else if (q < (edge ? 0.92 : 0.93)) { if (free(tx - 1.1, ty - 1.1, tx + 1.1, ty + 1.1, 0.2)) add(bush(tx, ty, ns(), T.roofKind === 'thatch')); } } }
   // cinturões de árvores e sebes nas divisas dos campos
   for (const f of M.fields) for (const edge of [0, 1]) {
     const r = R(); const isBelt = r < T.belts, isHedge = !isBelt && r < T.belts + T.hedges; if (!isBelt && !isHedge) continue;
@@ -843,6 +870,6 @@ function obbHitsBox(cx, cy, h, hl, hw, b) { const c = Math.cos(h), s = Math.sin(
   return true; }
 
 return { PVS, SIZE, HALF, RES, OPAC, SOFT, BURN, RUBBLE_Z, BURN_T, MAT: { LEAF, TRUNK, WALL, TILE, HAY, WOOD, STONE, FLOOR, RUBBLE, THATCH, SAND, METAL, GLASS, RUBBER, DIRT, BRICK, CLOTH, LOG },
-  HARD, THEMES, generate, propAt, propCenter, propsAlong, rayBox, los, obbHitsBox, mulberry32, h3,
+  HARD, THEMES, generate, woodAt, woodEdge, wheatAt, isWheatCol, propAt, propCenter, propsAlong, rayBox, los, obbHitsBox, mulberry32, h3,
   tunnel, crushBox, burn, flammableNear, settle, push, shatter, winAt, fell, fallDir, craterRim, addVisual, reindex, own, ownColors };
 });

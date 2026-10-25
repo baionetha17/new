@@ -26,6 +26,10 @@ De perto o chão ganha detalhe: tufos de grama, fileiras de lavoura, torrões e 
 
 Os campos dourados são trigo alto que balança com o vento e fica deitado por onde o tanque passa; de perto aparecem tufos de grama. Há arbustos redondos na beira dos campos e perto das casas, e fios de telégrafo entre os postes (poste derrubado arrebenta o fio). Explosão grande levanta onda de poeira, dá um clarão e solta brasas; HE deixa o aço chamuscado onde acertou. Tanque destruído solta uma coluna de fumaça preta.
 
+Há matas de contorno irregular, com árvores, mudas e arbustos em voxel sobre chão de folhas. O tanque esmaga mudas e arbustos (com barulho de galho quebrando) e perde embalo nas árvores. Dentro da mata o tanque fica camuflado: parado só é visto a 55 m, andando a 95 m; encostado num arbusto ou sebe, a 90/160 m, até ter esmagado demais a folhagem. Sem comandante o tanque enxerga 20% menos. O HUD mostra "camuflado: visto a X m".
+
+De perto o trigo vira talos de voxel com espiga. HE no trigo pode atear fogo (35% das vezes): ele corre a favor do vento, devagar contra ele, solta fumaça que tapa a visão e deixa o campo preto.
+
 O tanque atravessa parede gastando o embalo: cada voxel quebrado custa energia (pedra mais que madeira e barro), então ele perde um pouco de velocidade e segue.
 
 ## Armas e visão
@@ -33,12 +37,15 @@ O tanque atravessa parede gastando o embalo: cada voxel quebrado custa energia (
 - **Metralhadora do casco:** atira sozinha em soldados (quando houver) dentro do arco da bola, se o metralhador estiver vivo.
 - **Fumaça (G):** o Sherman dispara o morteiro de 2" na direção do canhão (35 a 150 m, 12 granadas); o Panzer joga óleo na descarga e solta uma cortina atrás (3 vezes). A fumaça corta a linha de visão.
 - **Névoa de guerra:** o time divide a visão; casas, sebes e fumaça fazem sombra. O que ninguém vê fica escurecido, e o inimigo que sumiu deixa um contorno por 10 s. O servidor é quem esconde os inimigos; a névoa é só o desenho.
+- **Câmera de acerto:** cada tiro seu que acerta um tanque abre, no canto superior esquerdo, um raio-X em câmera lenta: o caminho do projétil, a placa atingida, penetração x blindagem efetiva, estilhaços e os módulos e tripulantes atingidos. Quando você é atingido, um painel menor "Fomos atingidos" aparece embaixo. **H** revê o último acerto.
+- Cada tripulante morto solta uma caveirinha que sobe da posição dele no tanque.
 - Com um tanque visto dentro de uma casa, o telhado fica meio transparente.
 
 ## Onde mexer
 - `shared/sim.js`: tanques (blindagem, módulos, munições, mobilidade) e balística.
 - `shared/map.js`: gerador de mapas (Kursk e Normandia), modelos dos objetos e as contas de destruição (servidor e navegadores fazem as mesmas).
 - `host/`: servidor da sala (salas, partida, IA), roda num Web Worker no navegador de quem hospeda.
+- `hitcam.js`: câmera de acerto (raio-X).
 - `ui.js`: telas e a conexão PeerJS; `game.js`, `render.js`, `audio.js`: partida, desenho, HUD e som.
 - `vendor/peerjs.min.js`: PeerJS 1.5.4 (licença MIT em `vendor/peerjs-LICENSE`).
 
