@@ -24,6 +24,17 @@ As casas são geradas na hora: isbás de barro ou de toras em Kursk, casas de pe
 
 De perto o chão ganha detalhe: tufos de grama, fileiras de lavoura, torrões e pedrinhas na estrada, sem perder o pixel.
 
+Os campos dourados são trigo alto que balança com o vento e fica deitado por onde o tanque passa; de perto aparecem tufos de grama. Há arbustos redondos na beira dos campos e perto das casas, e fios de telégrafo entre os postes (poste derrubado arrebenta o fio). Explosão grande levanta onda de poeira, dá um clarão e solta brasas; HE deixa o aço chamuscado onde acertou. Tanque destruído solta uma coluna de fumaça preta.
+
+O tanque atravessa parede gastando o embalo: cada voxel quebrado custa energia (pedra mais que madeira e barro), então ele perde um pouco de velocidade e segue.
+
+## Armas e visão
+- **Canhão:** clique. **Metralhadora coaxial:** segure Espaço; ela segue a torre, tem fita (troca demorada sem municiador) e munição real. As balas quebram vidro, lascam madeira e pedra e não furam blindagem.
+- **Metralhadora do casco:** atira sozinha em soldados (quando houver) dentro do arco da bola, se o metralhador estiver vivo.
+- **Fumaça (G):** o Sherman dispara o morteiro de 2" na direção do canhão (35 a 150 m, 12 granadas); o Panzer joga óleo na descarga e solta uma cortina atrás (3 vezes). A fumaça corta a linha de visão.
+- **Névoa de guerra:** o time divide a visão; casas, sebes e fumaça fazem sombra. O que ninguém vê fica escurecido, e o inimigo que sumiu deixa um contorno por 10 s. O servidor é quem esconde os inimigos; a névoa é só o desenho.
+- Com um tanque visto dentro de uma casa, o telhado fica meio transparente.
+
 ## Onde mexer
 - `shared/sim.js`: tanques (blindagem, módulos, munições, mobilidade) e balística.
 - `shared/map.js`: gerador de mapas (Kursk e Normandia), modelos dos objetos e as contas de destruição (servidor e navegadores fazem as mesmas).

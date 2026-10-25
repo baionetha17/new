@@ -108,6 +108,46 @@ class View {
       if (s === 1 && sv === 1) { if (x0 >= 0 && y0 >= 0 && x0 < W && y0 < H) { const p = y0 * W + x0; if (d < zb[p]) { zb[p] = d; u32[p] = col; idb[p] = id; occ[p] = 1; } } continue; }
       for (let yy = y0; yy < y0 + sv; yy++) { if (yy < 0 || yy >= H) continue; const row = yy * W; for (let xx = x0; xx < x0 + s; xx++) { if (xx < 0 || xx >= W) continue; const p = row + xx;
         if (d < zb[p]) { zb[p] = d; u32[p] = col; idb[p] = id; occ[p] = 1; } } } } }
+  // telhado e andar de cima "fantasmas": a parte que o corte tirou, desenhada por cima meio transparente.
+  // Guarda só o voxel mais da frente de cada pixel e mistura uma vez, para o telhado não ficar manchado.
+  splatGhost(pr) { const cam = this.cam, S = cam.S, W = this.W, H = this.H, R = pr.R; if (!R || !R.visCut) return;
+    const s = Math.max(1, Math.ceil(PVS * S * 1.06)), hs = s / 2, sv = Math.max(1, Math.ceil(PVS * S * (SA + CA) * 1.02)), hv = sv / 2, ox = pr.x0 - cam.x - cam.ox, oy = pr.y0 - cam.y - cam.oy;
+    if (!this.gz || this.gz.length !== W * H) { this.gz = new Float32Array(W * H).fill(Infinity); this.gc = new Uint32Array(W * H); this.gt = []; }
+    const gz = this.gz, gc = this.gc, gt = this.gt, zb = this.zb, zc = (pr.cutK - 1) * PVS, L = pr.list, lx = R.lx, ly = R.ly, lz = R.lz, shd = R.shd, vis = R.vis, mat = pr.mat, cr = pr.cr, cg = pr.cg, cb = pr.cb, hide = pr.hide;
+    for (let q = 0; q < vis.length; q++) { const a = vis[q], z = lz[a]; if (z <= zc) continue; const idx = L[a]; if (!mat[idx] || (hide && hide[idx])) continue;
+      const X = ox + lx[a], Y = oy + ly[a], sx = W / 2 + X * S, sy = H / 2 - (Y * SA + z * CA) * S, d = Y * CA - z * SA; if (sx < -s || sy < -s || sx > W + s || sy > H + s) continue;
+      const sh = shd[a] / 100, col = pack(Math.min(255, cr[idx] * sh), Math.min(255, cg[idx] * sh), Math.min(255, cb[idx] * sh)), x0 = (sx - hs) | 0, y0 = (sy - hv) | 0;
+      for (let yy = y0; yy < y0 + sv; yy++) { if (yy < 0 || yy >= H) continue; const row = yy * W; for (let xx = x0; xx < x0 + s; xx++) { if (xx < 0 || xx >= W) continue; const p = row + xx;
+        if (d < zb[p] && d < gz[p]) { if (gz[p] === Infinity) gt.push(p); gz[p] = d; gc[p] = col; } } } } }
+  blendGhost(a) { if (!this.gt || !this.gt.length) return; const u = this.u32, gz = this.gz, gc = this.gc, b = 1 - a;
+    for (const p of this.gt) { const c = u[p], g = gc[p]; u[p] = pack((c & 255) * b + (g & 255) * a, ((c >> 8) & 255) * b + ((g >> 8) & 255) * a, ((c >> 16) & 255) * b + ((g >> 16) & 255) * a); gz[p] = Infinity; }
+    this.gt.length = 0; }
+  // trigo alto e tufos de grama: uma espiga (ou ponta de folha) por ponto, levantada do chão e balançando com o vento.
+  // Longe, os pontos ficam mais espaçados; grama só aparece de perto. O que o tanque amassou fica deitado (não desenha).
+  vegetation(T, time) { const { W, H, u32, zb, cam } = this, S = cam.S, cx = cam.x + cam.ox, cy = cam.y + cam.oy, half = T.M.half;
+    const sp = Math.max(0.1, Math.ceil(1.7 / S * 10) / 10); if (sp > 0.6 || !T.vb) return; const grass = sp <= 0.1001, res = T.res, tw = T.w, kind = T.kind, F = T.flat, FN = T.flatN, VB = T.vbN;
+    const x0 = cx - W / 2 / S - 1, x1 = cx + W / 2 / S + 1, y0 = cy - (H / 2) / (S * SA) - 1.6, y1 = cy + (H / 2) / (S * SA) + 0.5;
+    for (let bj = Math.max(0, Math.floor((y0 + half) / 4)); bj <= Math.min(VB - 1, Math.floor((y1 + half) / 4)); bj++) for (let bi = Math.max(0, Math.floor((x0 + half) / 4)); bi <= Math.min(VB - 1, Math.floor((x1 + half) / 4)); bi++) {
+      const bm = T.vb[bj * VB + bi]; if (!(bm & 1) && !(grass && bm & 2)) continue; const gx0 = bi * 4 - half, gy0 = bj * 4 - half;
+      for (let gy = gy0 + sp / 2; gy < gy0 + 4; gy += sp) { const gj = Math.round(gy * 10); for (let gx = gx0 + sp / 2; gx < gx0 + 4; gx += sp) { const gi = Math.round(gx * 10);
+        let hs = Math.imul(gi * 374761393 + gj * 668265263 | 0, 1274126177); hs = (hs ^ (hs >>> 15)) >>> 0; const n = (hs & 1023) / 1023, n2 = ((hs >>> 10) & 1023) / 1023;
+        const jx = gx + (n - .5) * sp * 0.8, jy = gy + (n2 - .5) * sp * 0.8, ti = ((jx - T.x0) * res) | 0, tj = ((jy - T.y0) * res) | 0; if (ti < 0 || tj < 0 || ti >= tw || tj >= T.h) continue;
+        const kd = kind[tj * tw + ti]; if (kd !== 5 && !(grass && kd === 1 && n2 < 0.22)) continue;
+        if (F[(((jy + half) * 4) | 0) * FN + (((jx + half) * 4) | 0)]) continue;
+        const ht = kd === 5 ? 0.72 + 0.22 * n : 0.1 + 0.2 * n, w = Math.sin(time * 1.7 + jx * 0.42 + jy * 0.27) + 0.4 * Math.sin(time * 3.1 + jx * 1.3), sw = w * 0.05 * ht;
+        const X = jx + sw - cx, Y = jy + sw * 0.5 - cy, sx = W / 2 + X * S, sy = H / 2 - (Y * SA + ht * CA) * S, d = Y * CA - ht * SA, ix = sx | 0, iy = sy | 0;
+        if (ix < 0 || iy < 0 || ix >= W || iy >= H) continue; const p = iy * W + ix; if (d >= zb[p]) continue;
+        let r, g, b; if (kd === 5) { const k = 0.78 + 0.32 * n2 + 0.08 * w; r = 214 * k; g = 182 * k; b = 100 * k; } else { const k = 0.85 + 0.3 * n; r = 82 * k; g = 128 * k; b = 54 * k; }
+        u32[p] = pack(r > 255 ? 255 : r, g > 255 ? 255 : g, b);
+        if (kd === 5 && S * ht * CA > 3 && iy + 1 < H && d < zb[p + W]) u32[p + W] = pack(r * 0.72, g * 0.7, b * 0.62); } } } }
+  // névoa de guerra: escurece o chão (e o que está em cima dele) onde o time não enxerga. vis = grade de 1 m, 0..255
+  fog(vis, N, half) { const cam = this.cam, S = cam.S, W = this.W, H = this.H, u = this.u32, cx = cam.x + cam.ox, cy = cam.y + cam.oy, B = 3;
+    for (let y = 0; y < H; y += B) { const wy = cy + (H / 2 - y - B / 2) / (S * SA) + half - 0.5, j = Math.floor(wy), fy = wy - j;
+      for (let x = 0; x < W; x += B) { const wx = cx + (x + B / 2 - W / 2) / S + half - 0.5, i = Math.floor(wx), fx = wx - i;
+        let v = 0; if (i >= 0 && j >= 0 && i < N - 1 && j < N - 1) { const o = j * N + i; v = ((vis[o] * (1 - fx) + vis[o + 1] * fx) * (1 - fy) + (vis[o + N] * (1 - fx) + vis[o + N + 1] * fx) * fy) / 255; }
+        if (v >= 0.999) continue; const k = 0.42 + 0.58 * v, kb = 0.5 + 0.5 * v;
+        for (let yy = y; yy < y + B && yy < H; yy++) for (let xx = x; xx < x + B && xx < W; xx++) { const p = yy * W + xx, c = u[p], r = c & 255, g = (c >> 8) & 255, bl = (c >> 16) & 255, l = (r + g + bl) / 3;
+          u[p] = pack((r * v + l * (1 - v) * 0.9) * k, (g * v + l * (1 - v) * 0.92) * k, Math.min(255, (bl * v + l * (1 - v)) * kb * 1.02)); } } } }
   // árvore caindo: gira os voxels em volta do pé até deitar (só desenho; a árvore deitada já existe no mapa)
   splatFalling(f, code, u) {
     const cam = this.cam, S = cam.S, W = this.W, H = this.H, s = Math.max(1, Math.ceil(PVS * S * 1.1)), hs = s / 2, sv = Math.max(1, Math.ceil(PVS * S * (SA + CA) * 1.05)), zb = this.zb, u32 = this.u32, idb = this.idb, occ = this.occ;
@@ -152,7 +192,9 @@ class View {
     for (let y = Math.floor((cy - R) / B) * B; y <= cy + R; y += B) for (let x = Math.floor((cx - R) / B) * B; x <= cx + R; x += B) { const d = ((x - cx) * (x - cx) + (y - cy) * (y - cy)) / R2; if (d <= 1) { const n = hash(x >> 1, y >> 1) * 0.35, aa = a * (1 - d) * (0.8 + n);
       for (let yy = y; yy < y + B; yy++) for (let xx = x; xx < x + B; xx++) this.plot(xx, yy, r, g, b, aa, false); } } }
   disc(cx, cy, R, r, g, b, a, add) { const R2 = R * R; for (let y = Math.floor(cy - R); y <= cy + R; y++) for (let x = Math.floor(cx - R); x <= cx + R; x++) { const d = (x - cx) * (x - cx) + (y - cy) * (y - cy); if (d <= R2) this.plot(x, y, r, g, b, a * (add ? 1 - d / R2 : 1), add); } }
-  present() { this.offc.putImageData(this.img, 0, 0); const c = this.ctx; c.imageSmoothingEnabled = false; c.drawImage(this.off, 0, 0, this.W * this.PX, this.H * this.PX); }
+  present() { this.offc.putImageData(this.img, 0, 0); const c = this.ctx; c.imageSmoothingEnabled = false; c.drawImage(this.off, 0, 0, this.W * this.PX, this.H * this.PX);
+    if (this.flash > 0.01) { c.fillStyle = 'rgba(255,236,200,' + this.flash.toFixed(3) + ')'; c.fillRect(0, 0, this.W * this.PX, this.H * this.PX); } }
+  leaves(p, n, col) { for (let i = 0; i < n; i++) { const k = 0.8 + rnd() * 0.35; this.particles.push({ k: 8, x: p[0] + (rnd() - .5) * 0.6, y: p[1] + (rnd() - .5) * 0.6, z: p[2] + rnd() * 0.5, vx: (rnd() - .5) * 3, vy: (rnd() - .5) * 3, vz: 1 + rnd() * 2.5, life: 3 + rnd() * 3, max: 6, ph: rnd() * 6, col: [col[0] * k, col[1] * k, col[2] * k] }); } }
   // ---------------------------------------------------------------- partículas (as mesmas do Banco)
   sparks(p, n, cnt, sp) { const P = this.particles; for (let i = 0; i < cnt; i++) { const d = nrm([n[0] + (rnd() - .5) * 1.6, n[1] + (rnd() - .5) * 1.6, n[2] + (rnd() - .3) * 1.6]); const v = (2 + rnd() * 6) * sp;
     P.push({ k: 0, x: p[0], y: p[1], z: p[2], vx: d[0] * v, vy: d[1] * v, vz: d[2] * v + 1, life: 0.25 + rnd() * 0.6, max: 0.8 }); }
@@ -168,7 +210,12 @@ class View {
     for (let i = 0; i < n; i++) { const z = rnd() * 1.4 - 0.4, a = rnd() * Math.PI * 2, r = Math.sqrt(Math.max(0, 1 - z * z)), v = (1 + rnd() * 4) * s + 0.5;
       P.push({ k: 1, x: p[0], y: p[1], z: p[2], vx: r * Math.cos(a) * v, vy: r * Math.sin(a) * v, vz: z * v + 1, life: 0.4 + rnd() * 0.8 * (0.6 + s), max: 0.4 + 0.8 * (0.6 + s), drag: 2.5 }); }
     for (let i = 0; i < n * 0.5; i++) P.push({ k: 0, x: p[0], y: p[1], z: p[2], vx: (rnd() - .5) * 10 * s, vy: (rnd() - .5) * 10 * s, vz: rnd() * 8 * s + 1, life: 0.5 + rnd() * 1.2, max: 1.2 });
-    for (let i = 0; i < n * 0.25; i++) P.push({ k: 2, x: p[0], y: p[1], z: p[2], vx: (rnd() - .5) * 2 * s, vy: (rnd() - .5) * 2 * s, vz: 0.8 + rnd() * 1.5, life: 3 + rnd() * 4, max: 7, r0: 0.2 * s + 0.1, r1: 0.7 * s + 0.5, col: [70, 66, 62] });
+    for (let i = 0; i < n * 0.3; i++) { const c = 50 + rnd() * 40; P.push({ k: 2, x: p[0] + (rnd() - .5) * s, y: p[1] + (rnd() - .5) * s, z: p[2], vx: (rnd() - .5) * 2.4 * s, vy: (rnd() - .5) * 2.4 * s, vz: 0.8 + rnd() * 2, life: 4 + rnd() * 5, max: 9, r0: 0.3 * s + 0.15, r1: 1.5 * s + 0.8, col: [c, c * 0.95, c * 0.9] }); }
+    // onda de choque: anel de poeira correndo pelo chão, clarão e brasas que sobem
+    if (s > 0.35 && p[2] < 1.5) { const m = Math.round(10 + s * 20); for (let i = 0; i < m; i++) { const a = i / m * Math.PI * 2 + rnd() * 0.2, v = 6 + rnd() * 5 * s; P.push({ k: 2, x: p[0], y: p[1], z: 0.15, vx: Math.cos(a) * v, vy: Math.sin(a) * v, vz: 0.15, life: 1.2 + rnd(), max: 2.2, r0: 0.25, r1: 1.2 + s, col: [150, 138, 112] }); }
+      P.push({ k: 5, x: p[0], y: p[1], z: 0.05, life: 0.45, max: 0.45, r: 2 + s * 4 }); }
+    for (let i = 0; i < n * 0.15; i++) P.push({ k: 9, x: p[0], y: p[1], z: p[2], vx: (rnd() - .5) * 3, vy: (rnd() - .5) * 3, vz: 2 + rnd() * 3, life: 1.5 + rnd() * 2.5, max: 4 });
+    this.flash = Math.max(this.flash || 0, Math.min(0.45, s * 0.35));
     if (big) P.push({ k: 5, x: p[0], y: p[1], z: 0.05, life: 0.6, max: 0.6, r: 3 + s * 3 }); }
   muzzle(p, dir) { const P = this.particles;
     P.push({ k: 4, x: p[0], y: p[1], z: p[2], life: 0.1, max: 0.1, r: 1.1 });
@@ -180,17 +227,22 @@ class View {
       if (q.k === 0) { q.px = q.x; q.py = q.y; q.pz = q.z; q.vz -= G * dt * 0.8; q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; if (q.z < 0) { q.z = 0; q.vz *= -0.35; q.vx *= 0.6; q.vy *= 0.6; } }
       else if (q.k === 1) { const dr = Math.exp(-(q.drag || 1.2) * dt); q.vx = q.vx * dr + wind[0] * dt; q.vy = q.vy * dr + wind[1] * dt; q.vz = q.vz * dr + 3.2 * dt; q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; }
       else if (q.k === 2) { q.vx = q.vx * 0.98 + wind[0] * dt; q.vy = q.vy * 0.98 + wind[1] * dt; q.vz *= 0.995; q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; }
+      // brasa: sobe com o calor, balança e apaga; folha: cai devagar rodopiando
+      else if (q.k === 9) { q.px = q.x; q.py = q.y; q.pz = q.z; q.vz = q.vz * 0.985 + 0.6 * dt; q.vx += (rnd() - .5) * 4 * dt + wind[0] * dt; q.vy += (rnd() - .5) * 4 * dt + wind[1] * dt; q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; }
+      else if (q.k === 8) { q.ph = (q.ph || 0) + dt * 5; q.vz = Math.max(-0.7, q.vz - 4 * dt); q.vx *= 0.97; q.vy *= 0.97; q.x += (q.vx + Math.sin(q.ph) * 0.6 + wind[0]) * dt; q.y += (q.vy + Math.cos(q.ph * 0.7) * 0.4 + wind[1]) * dt; q.z += q.vz * dt; if (q.z < 0.03) { q.z = 0.03; q.vz = 0; q.vx = q.vy = 0; } }
       else if (q.k === 3) { if (!q.rest) { q.vz -= G * dt; q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; if (q.z < 0.05) { q.z = 0.05; q.vz *= -0.3; q.vx *= 0.5; q.vy *= 0.5; if (Math.abs(q.vz) < 0.6) q.rest = true; } }
         if (q.rest && q.keep) { this.addLitter(q.x, q.y, 0.05 * (q.sz || 1), q.col, q.sz || 1); P[i] = P[P.length - 1]; P.pop(); } } }
-    if (P.length > 7000) P.splice(0, P.length - 7000); }
+    if (P.length > 7000) P.splice(0, P.length - 7000); if (this.flash > 0) this.flash = Math.max(0, this.flash - dt * 3); }
   drawParticles() { const cam = this.cam, sc = cam.S / 30, P = [0, 0, 0], Q = [0, 0, 0], W = this.W, H = this.H, zb = this.zb;
     for (const q of this.particles) { if (q.k !== 2) continue; this.proj(q.x, q.y, q.z, P); const age = 1 - q.life / q.max; const R = (q.r0 + (q.r1 - q.r0) * age) * cam.S; const a = 0.3 * (1 - age) * Math.min(1, age * 6 + 0.2);
-      if (P[0] < -R || P[1] < -R || P[0] > W + R || P[1] > H + R) continue; this.softDisc(P[0], P[1], Math.min(R, cam.S * 1.6, 60 * this.GB), q.col[0], q.col[1], q.col[2], a); }
+      if (P[0] < -R || P[1] < -R || P[0] > W + R || P[1] > H + R) continue; this.softDisc(P[0], P[1], Math.min(R, cam.S * 3.2, 110 * this.GB), q.col[0], q.col[1], q.col[2], a); }
     for (const q of this.particles) { this.proj(q.x, q.y, q.z, P); const ix = P[0] | 0, iy = P[1] | 0; if (ix < -40 || iy < -40 || ix >= W + 40 || iy >= H + 40) continue;
       const inside = ix >= 0 && iy >= 0 && ix < W && iy < H; const behind = inside && P[2] > zb[iy * W + ix] + 0.12;
       if (q.k === 0) { if (behind || !inside) continue; const t = q.life / q.max; this.proj(q.px ?? q.x, q.py ?? q.y, q.pz ?? q.z, Q); const c = t > 0.5 ? [255, 250, 200] : [255, 190, 80]; this.line(Q[0], Q[1], P[0], P[1], c[0], c[1], c[2], 1, true); }
       else if (q.k === 1) { if (behind) continue; const age = 1 - q.life / q.max; const c = fireCol(age); const R = Math.max(0.6, (0.9 - age * 0.4) * sc * 2.2); this.disc(P[0], P[1], R, c[0], c[1], c[2], 0.9, age < 0.55); }
       else if (q.k === 3) { if (!inside || (behind && !q.rest)) continue; const s = Math.max(1, Math.ceil(VS * cam.S * (q.sz || 1))); const c = pack(q.col[0], q.col[1], q.col[2]); for (let y = iy; y < iy + s; y++) for (let x = ix; x < ix + s; x++) if (x >= 0 && y >= 0 && x < W && y < H) this.u32[y * W + x] = c; }
+      else if (q.k === 9) { if (behind || !inside) continue; const t = q.life / q.max; this.plot(ix, iy, 255, 150 + 100 * t, 60 * t, Math.min(1, t * 2), true); }
+      else if (q.k === 8) { if (!inside) continue; const c = pack(q.col[0], q.col[1], q.col[2]), s2 = Math.max(1, Math.round(VS * cam.S * 0.6)); for (let y = iy; y < iy + s2; y++) for (let x = ix; x < ix + (((q.ph * 2) | 0) % 2 ? s2 : Math.max(1, s2 >> 1)); x++) if (x >= 0 && y >= 0 && x < W && y < H) this.u32[y * W + x] = c; }
       else if (q.k === 4) { const a = q.life / q.max; this.disc(P[0], P[1], q.r * cam.S * (1.4 - a * 0.4), 255, 230, 170, 0.9 * a, true); }
       else if (q.k === 5) { const a = q.life / q.max; const R = q.r * cam.S * (1 - a); for (let t = 0; t < 64; t++) { const an = t / 64 * Math.PI * 2; this.plot(P[0] + Math.cos(an) * R, P[1] + Math.sin(an) * R * SA, 255, 220, 170, 0.6 * a, true); } } } }
   label(w, text, col, dur) { this.labels.push({ w: w.slice(), text, col, t: 0, dur: dur || 1.6 }); }
@@ -209,7 +261,7 @@ function buildGround(M) {
   const theme = MAPGEN.THEMES[M.theme];
   for (const f of M.fields) {
     const i0 = Math.max(0, Math.floor((f.x0 - x0) * res)), i1 = Math.min(w, Math.ceil((f.x1 - x0) * res)), j0 = Math.max(0, Math.floor((f.y0 - y0) * res)), j1 = Math.min(h, Math.ceil((f.y1 - y0) * res));
-    const c = f.col, fs = f.s % 1000, fk = c[1] > c[0] * 1.08 ? 1 : f.dir ? 4 : 2;
+    const c = f.col, fs = f.s % 1000, fk = c[1] > c[0] * 1.08 ? 1 : c[0] > 160 && c[1] > 145 ? 5 : f.dir ? 4 : 2;   // 5 = trigo alto
     for (let j = j0; j < j1; j++) { const wy = y0 + (j + .5) / res; for (let i = i0; i < i1; i++) { const wx = x0 + (i + .5) / res;
       const n = vnoise(wx / 7 + fs, wy / 7), n2 = hash(i, j), m = vnoise(wx / 1.7 + 30, wy / 1.7 + fs);
       let k = 0.86 + 0.22 * n + 0.06 * n2;
@@ -236,6 +288,9 @@ function buildGround(M) {
     base[j * w + i] = pack((c & 255) * k, ((c >> 8) & 255) * k, ((c >> 16) & 255) * k); }
   for (const pr of M.props) { stampShadow(T, pr, 1); pr._sb = shadowBox(pr); }
   composite(T, 0, 0, w, h);
+  // vegetação alta: blocos de 4 m que têm trigo (1) ou grama (2), e o mapa do que foi amassado (células de 25 cm)
+  const VB = Math.ceil(M.size / 4); T.vb = new Uint8Array(VB * VB); T.vbN = VB; T.flat = new Uint8Array(M.size * 4 * M.size * 4); T.flatN = M.size * 4;
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) { const kd = kind[j * w + i]; if (kd !== 5 && kd !== 1) continue; const b = Math.floor(j / res / 4) * VB + Math.floor(i / res / 4); T.vb[b] |= kd === 5 ? 1 : 2; }
   return T;
 }
 function composite(T, i0, j0, i1, j1) { const { w, base, data, shade } = T; i0 = Math.max(0, i0); j0 = Math.max(0, j0); i1 = Math.min(T.w, i1); j1 = Math.min(T.h, j1); texChanged(T, i0, j0, i1, j1);
@@ -282,6 +337,13 @@ function darken(T, x, y, k, minK) { const p = texIdx(T, x, y); if (p < 0) return
 function paint(T, x, y, col, a) { const p = texIdx(T, x, y); if (p < 0) return; const c = T.base[p]; const r = lerp(c & 255, col[0], a), g = lerp((c >> 8) & 255, col[1], a), b = lerp((c >> 16) & 255, col[2], a);
   T.base[p] = pack(r, g, b); T.data[p] = T.shade[p] ? pack(r * 0.6, g * 0.63, b * 0.68) : T.base[p]; }
 // marcas de esteira
+// o tanque deita o trigo e a grama por onde passa (só desenho)
+function flatten(T, x, y, h, len, wid) { const F = T.flat; if (!F) return; const N = T.flatN, c = Math.cos(h), s = Math.sin(h), hl = len / 2, hw = wid / 2, R = Math.hypot(hl, hw);
+  for (let j = Math.floor((y - R + T.M.half) * 4); j <= Math.ceil((y + R + T.M.half) * 4); j++) for (let i = Math.floor((x - R + T.M.half) * 4); i <= Math.ceil((x + R + T.M.half) * 4); i++) { if (i < 0 || j < 0 || i >= N || j >= N) continue;
+    const dx = (i + .5) / 4 - T.M.half - x, dy = (j + .5) / 4 - T.M.half - y, u = dx * c + dy * s, v = -dx * s + dy * c; if (Math.abs(u) <= hl && Math.abs(v) <= hw) F[j * N + i] = 1; } }
+function flattenDisc(T, x, y, r) { const F = T.flat; if (!F) return; const N = T.flatN;
+  for (let j = Math.floor((y - r + T.M.half) * 4); j <= Math.ceil((y + r + T.M.half) * 4); j++) for (let i = Math.floor((x - r + T.M.half) * 4); i <= Math.ceil((x + r + T.M.half) * 4); i++) { if (i < 0 || j < 0 || i >= N || j >= N) continue;
+    if (((i + .5) / 4 - T.M.half - x) ** 2 + ((j + .5) / 4 - T.M.half - y) ** 2 < r * r) F[j * N + i] = 1; } }
 function stampTracks(T, x, y, h, wid) { const c = Math.cos(h), s = Math.sin(h);
   for (const side of [1, -1]) { const off = side * (wid / 2 - 0.25); for (let u = -0.15; u <= 0.15; u += 0.3) for (let v = -0.18; v <= 0.18; v += 0.18) darken(T, x - s * (off + v) + c * u, y + c * (off + v) + s * u, 0.93, 120); } }
 function stampCrater(T, x, y, r) { const step = 1 / T.res;
@@ -313,5 +375,5 @@ function shadeProp(pr) { const { nx, ny, nz, mat, list } = pr, nxy = nx * ny, sh
     const sh = 0.5 + 0.62 * Math.max(0, x * LIGHT[0] + y * LIGHT[1] + z * LIGHT[2]) + 0.08 * z; shd[a] = Math.round(sh * 100); }
   pr.R.vis = Int32Array.from(vis); pr.R.lod = Int32Array.from(lod); pr.R.visCut = kc ? Int32Array.from(cv) : null; }
 
-return { View, buildGround, composite, reshadow, stampTracks, stampCrater, stampScorch, paint, prepProp, refreshProp, shadeProp, SA, CA, LIGHT, pack, fireCol };
+return { View, buildGround, composite, reshadow, stampTracks, flatten, flattenDisc, stampCrater, stampScorch, paint, prepProp, refreshProp, shadeProp, SA, CA, LIGHT, pack, fireCol };
 })();
