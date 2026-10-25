@@ -191,8 +191,8 @@ const DIAG = { on: false, b: new Map(), el: null,
     if (!o) { o = { sp: 0, mg: 0, snap: 0, rx: 0, play: 0, late: 0, fr: 0, frMax: 0, q: 0, belt: -1 }; this.b.set(k, o); for (const kk of this.b.keys()) { if (kk < k - 150) this.b.delete(kk); else break; } }
     return o; },
   text() { const ks = [...this.b.keys()], k0 = ks[0] || 0;
-    let t = 'diag metralhadora (100 ms por linha) ' + navigator.userAgent + '\nt(s)  esp env pac rx toc fila atraso(ms) quadroMax(ms) fita\n';
-    for (const k of ks) { const o = this.b.get(k); t += ((k - k0) / 10).toFixed(1).padStart(5) + '   ' + o.sp + '   ' + o.mg + '  ' + String(o.snap).padStart(2) + ' ' + String(o.rx).padStart(2) + ' ' + String(o.play).padStart(2) + ' ' + String(o.q).padStart(4) + ' ' + String(Math.round(o.late)).padStart(6) + ' ' + String(Math.round(o.frMax)).padStart(8) + '   ' + o.belt + '\n'; }
+    let t = 'diag metralhadora (100 ms por linha) ' + navigator.userAgent + '\nt(s)  esp env pac rx toc fila atraso(ms) quadroMax(ms) fita pulos\n';
+    for (const k of ks) { const o = this.b.get(k); t += ((k - k0) / 10).toFixed(1).padStart(5) + '   ' + o.sp + '   ' + o.mg + '  ' + String(o.snap).padStart(2) + ' ' + String(o.rx).padStart(2) + ' ' + String(o.play).padStart(2) + ' ' + String(o.q).padStart(4) + ' ' + String(Math.round(o.late)).padStart(6) + ' ' + String(Math.round(o.frMax)).padStart(8) + '   ' + o.belt + '  ' + (o.skip || 0) + '\n'; }
     return t; },
   draw() { if (!this.on) { if (this.el) this.el.hidden = true; return; }
     if (!this.el) { this.el = document.createElement('pre'); this.el.className = 'diag'; document.body.appendChild(this.el); }
@@ -239,7 +239,7 @@ function unbindInput() { const cv = handlers.cv; if (!cv) return;
 const ZOOM_MAX_M = 150;
 function zoomLimits() { const V = st.view; return [Math.max(0.7 * V.GBcss, Math.max(V.cw, V.ch / RENDER.SA) / (2 * ZOOM_MAX_M)), 42 * V.GBcss]; }
 function zoom(f) { const [a, b] = zoomLimits(); st.zoom = clamp(st.zoom * f, a, b); }
-function sendInput() { if (!st || !net) return; const k = st.keys, p = st.paused;
+function sendInput() { if (!st || !net) return; const k = st.keys, p = st.paused; st.lastTick = performance.now();
   const thr = p ? 0 : (k.w || k.arrowup ? 1 : 0) - (k.s || k.arrowdown ? 1 : 0), steer = p ? 0 : (k.a || k.arrowleft ? 1 : 0) - (k.d || k.arrowright ? 1 : 0);
   { const o = DIAG.cur(); if (k[' ']) o.sp++; if (!p && k[' ']) o.mg++; }
   net({ t: 'input', thr, steer, aim: st.aim.map(v => Math.round(v * 100) / 100), fire: st.fireN, sel: st.sel, rep: st.repN, smk: st.smkN, mg: !p && k[' '] ? 1 : 0 }); }
@@ -252,6 +252,11 @@ function quit() { net({ t: 'quit' }); const fn = onExit; stop(); if (fn) fn(); }
 // ================================================================ quadro
 function frame(nowMs) {
   if (!st) return; raf = requestAnimationFrame(frame);
+  // Com tecla segurada (repetição do teclado) e quadro pesado, o Chrome/Edge dá prioridade total a entrada e desenho e
+  // deixa de rodar timers e mensagens do servidor até soltar a tecla. Se o envio de input atrasou, pula este quadro
+  // para abrir uma brecha (nunca dois seguidos).
+  if (!st.skipped && st.lastTick && performance.now() - st.lastTick > 60) { st.skipped = true; DIAG.cur().skip = (DIAG.cur().skip || 0) + 1; return; }
+  st.skipped = false;
   const rdt = Math.min(0.5, Math.max(0, (nowMs - st.last) / 1000)), dt = Math.min(0.05, rdt); st.last = nowMs;
   { const o = DIAG.cur(); o.frMax = Math.max(o.frMax, rdt * 1000); o.q = Math.max(o.q, st.mgQ.length); DIAG.draw(); }
   const V = st.view; V.resize();
