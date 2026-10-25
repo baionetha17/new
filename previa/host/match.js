@@ -64,7 +64,10 @@ class Match {
   }
   takeRound(e, type) { e.ammo[type]--; e.loaded = type; const tk = e.tank; for (const k of tk.game.racks) { const r = tk.mk[k]; if (r.count > 0) { r.count--; break; } } }
   // ---------------------------------------------------------------- passo da simulação
-  step() {
+  // se alguma conta der erro, o resto do passo é pulado mas o estado ainda sai para os navegadores
+  // (sem isso os eventos se acumulavam e chegavam todos de uma vez no passo seguinte que desse certo)
+  step() { try { this.stepInner(); } finally { if (!this.over) this.broadcast(); } }
+  stepInner() {
     const dt = TICK; this.t += dt; this.tick++;
     for (const e of this.ents) {
       const tk = e.tank;
@@ -80,12 +83,11 @@ class Match {
     }
     for (const s of this.shells) this.stepShell(s, dt);
     this.stepSmoke(dt);
-    this.stepFires(dt);
+    this.stepFires(dt); this.stepWheat(dt);
     if (this.tick % 6 === 0) this.settleAll();
     this.shells = this.shells.filter(s => s.alive);
     if (this.tick % 5 === 0) this.visibility();
     this.rules(dt);
-    this.broadcast();
   }
   // ---------------------------------------------------------------- mobilidade
   drive(e, dt) {
@@ -150,9 +152,9 @@ class Match {
       if (!MAP.obbHitsBox(x, y, h, hl, hw, pr.foot)) continue;
       if (pr.struct) { const hl2 = r2(g.len / 2 + 0.05), hw2 = r2(g.wid / 2), rem = MAP.push(pr, xq, yq, hq, hl2, hw2);
         if (rem.length) { this.ev.push(['pp', pr.id, xq, yq, hq, hl2, hw2]); this.settleQ.add(pr); } continue; }
-      if ((pr.kind === 'tree' || pr.kind === 'pole') && !pr.fallen) { this.fellProp(pr, Math.cos(h), Math.sin(h)); e.v *= pr.kind === 'pole' ? 0.95 : 0.7; continue; }
+      if ((pr.kind === 'tree' || pr.kind === 'pole') && !pr.fallen) { this.fellProp(pr, Math.cos(h), Math.sin(h)); e.v *= pr.kind === 'pole' ? 0.95 : pr.tree === 'sapling' ? 0.98 : (pr.trunkR || 0.2) > 0.2 ? 0.75 : 0.86; continue; }
       const zlo = pr.rubble ? MAP.RUBBLE_Z : 0, rem = MAP.crushBox(pr, xq, yq, hq, hl, hw, zlo, 2.6);
-      if (rem.length) { this.ev.push(['pq', pr.id, xq, yq, hq, hl, hw, zlo]); e.v *= pr.kind === 'sand' || pr.kind === 'cart' ? 0.88 : 0.95; }
+      if (rem.length) { pr.crushN = (pr.crushN || 0) + 1; this.ev.push(['pq', pr.id, xq, yq, hq, hl, hw, zlo]); e.v *= pr.kind === 'sand' || pr.kind === 'cart' ? 0.88 : 0.95; }
     }
   }
   fellProp(pr, dx, dy) { if (pr.gone || pr.fallen) return; const dir = MAP.fallDir(dx, dy); if (pr.fire) this.putOut(pr); MAP.fell(this.map, pr, dir); this.ev.push(['pd', pr.id, dir]); }
@@ -212,7 +214,7 @@ class Match {
       const tgt = !crew ? null : coax ? (e.inp.mg ? e.inp.aim : null) : this.bowTarget(e, M);
       if (!tgt) { w.acc = 0; continue; }
       w.acc += M.rate * dt;
-      while (w.acc >= 1 && w.belt > 0) { w.acc -= 1; w.belt--; this.bullet(e, w, tgt, M); }
+      while (w.acc >= 1 && w.belt > 0) { w.acc -= 1; w.belt--; this.bullet(e, w, tgt, M, this.t - w.acc / M.rate); }
       e.reveal = Math.max(e.reveal, 1.5); }
   }
   // alvo da metralhadora do casco: o soldado inimigo mais perto, visível e dentro do arco (ainda não há soldados no jogo)
@@ -222,7 +224,7 @@ class Match {
       if (Math.abs(wrap(Math.atan2(dy, dx) - tk.h)) > M.arc * D2R) continue; if (MAP.los(this.map, [tk.x, tk.y, 1.5], [t.x, t.y, 1.2]) < 1) continue; best = [t.x, t.y, 1.0]; bd = d; }
     return best; }
   mgMuzzle(tk, w) { const b = tk.mk[w.mod].box, T = tk.mk[w.mod].g === 't' ? tk.TT : tk.TH; return SIM.toW(T, [b[0][1] + 0.05, (b[1][0] + b[1][1]) / 2, (b[2][0] + b[2][1]) / 2], [0, 0, 0]); }
-  bullet(e, w, a, M) {
+  bullet(e, w, a, M, tb) {
     const tk = e.tank, g = tk.game, mz = this.mgMuzzle(tk, w);
     let yaw = w.k === 'coax' ? tk.h + tk.ty : Math.atan2(a[1] - mz[1], a[0] - mz[0]);
     if (w.k !== 'coax') yaw = tk.h + Math.max(-M.arc * D2R, Math.min(M.arc * D2R, wrap(yaw - tk.h)));
@@ -236,7 +238,7 @@ class Match {
       const r = this.bulletSeg(e, p0, p1, dist, M); if (r) { end = r[0]; hit = r[1]; break; } p0 = p1; dist += 20;
       if (Math.abs(p1[0]) > MAP.HALF + 60 || Math.abs(p1[1]) > MAP.HALF + 60) break; }
     if (!end) end = p0;
-    this.ev.push(['mg', e.id, w.k === 'coax' ? 0 : 1, r2(mz[0]), r2(mz[1]), r2(mz[2]), r2(end[0]), r2(end[1]), r2(Math.max(0, end[2])), hit]);
+    this.ev.push(['mg', e.id, w.k === 'coax' ? 0 : 1, r2(mz[0]), r2(mz[1]), r2(mz[2]), r2(end[0]), r2(end[1]), r2(Math.max(0, end[2])), hit, r3(tb === undefined ? this.t : tb)]);
   }
   // um trecho do voo: chão, tanque (não fura blindagem) ou objeto do mapa. Devolve [ponto, tipo] ou null.
   // tipo: 0 chão/nada, 1 madeira/palha, 2 pedra/metal, 3 tanque
@@ -315,7 +317,7 @@ class Match {
         const pen = Math.max(1, SIM.penAt(s.A.def, s.dist + c.t) - s.loss);
         const rep = tk.castShot([at[0] - dn[0] * 0.3, at[1] - dn[1] * 0.3, at[2] - dn[2] * 0.3], dn, s.A, pen, false, 9);
         if (rep.res !== 'miss' || rep.ground) {
-          if (rep.res !== 'miss') this.afterHit(s, c.e, rep, was);
+          if (rep.res !== 'miss') { this.afterHit(s, c.e, rep, was); this.hitCam(s, c.e, rep, was, s.dist + c.t); }
           if (rep.blast) this.propBlast(rep.blast, s.A);
           if (rep.ground && rep.res === 'miss') this.groundImpact(s, rep.end); else this.endShell(s, rep.end);
           return; }
@@ -327,14 +329,24 @@ class Match {
     const st = s.ent.slot.stats; if (!wasDestroyed && target.team !== s.ent.team) { st.hits++; if (rep.res === 'pen') st.pens++; st.crew += rep.crew.length; }
     this.ev.push(['hi', s.ent.id, target.id, rep.res, rep.plate || '', Math.round(rep.eff), Math.round(rep.pen), rep.crew, rep.mods.slice(0, 5), s.A.name]);
   }
+  // câmera de acerto: caminho do projétil, estilhaços e o que foi atingido, tudo no sistema do casco do alvo (o navegador desenha o raio-X)
+  hitCam(s, target, rep, was, dist) {
+    const tk = target.tank, L = [0, 0, 0], put = (q, out) => { SIM.toL(tk.TH, q, L); out.push(r2(L[0]), r2(L[1]), r2(L[2])); };
+    const path = []; for (const q of rep.path || []) put(q, path);
+    const fr = [], F = rep.frags || []; for (let i = 0; i < F.length; i += 7) { put([F[i], F[i + 1], F[i + 2]], fr); put([F[i + 3], F[i + 4], F[i + 5]], fr); fr.push(F[i + 6]); }
+    const mods = (rep.mids || []).filter(id => tk.MOD[id]).map(id => [id, tk.MOD[id].dead ? 1 : 0]);
+    const res = !was && tk.destroyed ? (tk.boom ? 'boom' : 'kill') : rep.res;
+    this.ev.push(['hc', s.ent.id, target.id, s.A.t, s.A.name, res, rep.plate || '', r2(rep.t || 0), Math.round(rep.eff || 0), Math.round(rep.pen || 0), Math.round(rep.ang || 0), Math.round(dist || 0), r3(tk.ty), path, fr, mods, rep.cids || []]);
+  }
   endShell(s, p) { if (!s.alive) return; s.alive = false; this.ev.push(['sh', s.id, r2(p[0]), r2(p[1]), r2(Math.max(0, p[2]))]); }
   groundImpact(s, p) {
     const A = s.A, big = A.t === 'HE' || A.fill > 300;
     const cr = r2(0.3 + A.cal / 300 + (big ? 0.5 : 0)); if (big) this.craters.push([p[0], p[1], cr * 1.2]);
     this.ev.push(['cr', r2(p[0]), r2(p[1]), cr, big ? 1 : 0], ['du', r2(p[0]), r2(p[1]), 0.1, big ? 30 : 18]);
-    if (big) { this.ev.push(['fb', r2(p[0]), r2(p[1]), 0.2, r2(0.3 + A.fill / 1800), 0]);
+    if (big) { this.ev.push(['fb', r2(p[0]), r2(p[1]), 0.2, r2(0.3 + A.fill / 1800), 0]); this.wheatFire(p, A);
       for (const e of this.ents) { const tk = e.tank; if (Math.hypot(tk.x - p[0], tk.y - p[1]) > 6) continue; const was = tk.destroyed; tk.lastHitBy = s.ent.slot;
-        const rep = { mods: [], crew: [], res: null }; tk.heBlast([p[0], p[1], 0.15], A, [0, 0, 1], rep); if (rep.mods.length || rep.crew.length) this.afterHit(s, e, Object.assign(rep, { res: rep.res || 'non', plate: 'Explosão perto', eff: 0, pen: 0 }), was); }
+        const rep = { mods: [], crew: [], res: null, mids: [], cids: [], frags: [] }; tk.heBlast([p[0], p[1], 0.15], A, [0, 0, 1], rep);
+        if (rep.mods.length || rep.crew.length) { this.afterHit(s, e, Object.assign(rep, { res: rep.res || 'non', plate: 'Explosão perto', eff: 0, pen: 0, path: [[p[0], p[1], 0.15]] }), was); this.hitCam(s, e, rep, was, s.dist); } }
       this.propBlast([p[0], p[1], 0.2], A); }
     this.endShell(s, p);
   }
@@ -392,6 +404,15 @@ class Match {
       if (rem.length) this.checkCollapse(pr);
       if (f.t > f.life) this.putOut(pr); }
     this.fires = this.fires.filter(pr => pr.fire); }
+  // trigo maduro pega fogo com HE de vez em quando; o fogo anda com o vento (rápido a favor, devagar contra).
+  // Cada navegador faz a mesma conta de por onde ele passa; o servidor só solta a fumaça (que tapa a vista) na frente do fogo.
+  wheatFire(p, A) { if (A.t !== 'HE' || Math.random() > 0.35 || !MAP.wheatAt(this.map, p[0], p[1])) return;
+    this.wheatFires = this.wheatFires || []; for (const f of this.wheatFires) if (Math.hypot(f.x - p[0], f.y - p[1]) < 40) return;
+    const f = { x: r2(p[0]), y: r2(p[1]), t: 0, seed: (Math.random() * 1e6) | 0, next: 3 }; this.wheatFires.push(f); this.ev.push(['wf', f.x, f.y, f.seed, r3(this.t)]); }
+  stepWheat(dt) { if (!this.wheatFires) return; const wl = Math.hypot(SMOKE_WIND[0], SMOKE_WIND[1]), wx = SMOKE_WIND[0] / wl, wy = SMOKE_WIND[1] / wl;
+    for (const f of this.wheatFires) { f.t += dt; if (f.t > 150 || f.t < f.next) continue; f.next += 4;
+      const d = Math.min(45, f.t * 0.8), a = (Math.random() - 0.5) * 1.6, ca = Math.cos(a), sa = Math.sin(a), x = f.x + (wx * ca - wy * sa) * d, y = f.y + (wx * sa + wy * ca) * d;
+      if (MAP.wheatAt(this.map, x, y)) this.addSmoke(x, y, 3 + Math.random() * 2, 26, 3); } }
   putOut(pr) { if (!pr.fire) return; pr.fire = null; this.ev.push(['pf', pr.id]); }
   // casa: o que perdeu apoio cai (a conta é feita aos poucos, juntando os estragos de alguns ticks)
   checkCollapse(pr) { if (pr.struct) this.settleQ.add(pr); }
@@ -403,10 +424,11 @@ class Match {
     for (const e of this.ents) e.visTo = [e.team === 0 || e.tank.destroyed, e.team === 1 || e.tank.destroyed];
     for (const team of [0, 1]) {
       const obs = this.ents.filter(o => o.team === team && !o.tank.destroyed);
-      for (const e of this.ents) { if (e.team === team || e.tank.destroyed) continue; const tk = e.tank; let vis = false;
+      for (const e of this.ents) { if (e.team === team || e.tank.destroyed) continue; const tk = e.tank; let vis = false; const hide = this.conceal(e);
         for (const o of obs) { const ot = o.tank, d = Math.hypot(ot.x - tk.x, ot.y - tk.y);
           if (d < 12 || (e.reveal > 0 && d < 800)) { vis = true; break; }
           if (this.smokeBlocks(ot.x, ot.y, tk.x, tk.y)) continue;
+          if (d > hide * (ot.hasSeat('commander') ? 1 : 0.8)) continue;
           if (d < 35) { vis = true; break; }
           const view = ot.game.view * (ot.hasSeat('commander') ? 1 : 0.65); if (d > view) continue;
           const eye = [ot.x, ot.y, 2.7];
@@ -414,6 +436,14 @@ class Match {
         e.visTo[team] = vis; }
     }
   }
+  // camuflagem: dentro do bosque (ou encostado num arbusto/sebe) o tanque só é visto de perto, e de mais perto ainda se estiver parado.
+  // Atirar revela (e.reveal) do mesmo jeito que em campo aberto.
+  conceal(e) { const tk = e.tank, mv = Math.abs(e.v) > 0.5;
+    if (MAP.woodAt(this.map, tk.x, tk.y)) return mv ? 95 : 55;
+    const R = tk.game.len / 2 + 1.2;
+    for (const id of MAP.propsAlong(this.map, tk.x - R, tk.y - R, tk.x + R, tk.y + R)) { const pr = this.map.props[id]; if (pr.gone || (pr.kind !== 'bush' && pr.kind !== 'hedge')) continue;
+      if (pr.solid0 && pr.list.length && MAP.obbHitsBox(tk.x, tk.y, tk.h, R, tk.game.wid / 2 + 1.2, pr.foot) && (pr.crushN || 0) < 6) return mv ? 160 : 90; }
+    return Infinity; }
   // ---------------------------------------------------------------- regras dos modos
   onDestroyed(e, cause) {
     const s = e.slot; s.stats.deaths++;
@@ -472,7 +502,7 @@ class Match {
       ammo: e.ammo, loaded: e.loaded, reload: r2(e.reload), reloadT: r2(e.reloadT || g.reload), sel: e.sel,
       rep: tk.repair ? [tk.repair.kind, r2(tk.repair.t / tk.repair.T)] : null, fires: tk.fires.length, v: r2(e.v),
       dead: tk.destroyed ? 1 : 0, respawn: s.respawnAt >= 0 ? Math.max(0, Math.ceil(s.respawnAt - this.t)) : -1,
-      view: Math.round(g.view * (tk.hasSeat('commander') ? 1 : 0.65)) };
+      view: Math.round(g.view * (tk.hasSeat('commander') ? 1 : 0.65)), hide: (() => { const h = this.conceal(e); return h === Infinity ? 0 : h; })() };
   }
   broadcast() {
     const ev = this.ev; this.ev = []; for (const e of this.ents) e.tank.out = this.ev;

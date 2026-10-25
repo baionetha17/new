@@ -122,24 +122,34 @@ class View {
   blendGhost(a) { if (!this.gt || !this.gt.length) return; const u = this.u32, gz = this.gz, gc = this.gc, b = 1 - a;
     for (const p of this.gt) { const c = u[p], g = gc[p]; u[p] = pack((c & 255) * b + (g & 255) * a, ((c >> 8) & 255) * b + ((g >> 8) & 255) * a, ((c >> 16) & 255) * b + ((g >> 16) & 255) * a); gz[p] = Infinity; }
     this.gt.length = 0; }
-  // trigo alto e tufos de grama: uma espiga (ou ponta de folha) por ponto, levantada do chão e balançando com o vento.
-  // Longe, os pontos ficam mais espaçados; grama só aparece de perto. O que o tanque amassou fica deitado (não desenha).
+  // trigo alto, capim da mata e tufos de grama. De perto cada pé é desenhado em voxels de 10 cm: a haste fina e a espiga
+  // (ou a ponta da folha) mais clara, inclinando com o vento. Longe, sobra um ponto por pé, mais espaçados; grama só de perto.
+  // O que o tanque amassou ou o fogo queimou fica deitado (não desenha).
   vegetation(T, time) { const { W, H, u32, zb, cam } = this, S = cam.S, cx = cam.x + cam.ox, cy = cam.y + cam.oy, half = T.M.half;
-    const sp = Math.max(0.1, Math.ceil(1.7 / S * 10) / 10); if (sp > 0.6 || !T.vb) return; const grass = sp <= 0.1001, res = T.res, tw = T.w, kind = T.kind, F = T.flat, FN = T.flatN, VB = T.vbN;
+    const sp = Math.max(0.1, Math.ceil(1.7 / S * 10) / 10); if (sp > 0.6 || !T.vb) return; const grass = sp <= 0.1001, tall = sp <= 0.2001, res = T.res, tw = T.w, kind = T.kind, F = T.flat, FN = T.flatN, VB = T.vbN;
+    const vx = Math.max(1, Math.round(PVS * S)), vox = vx >= 2, sw1 = Math.max(1, vx >> 1);
     const x0 = cx - W / 2 / S - 1, x1 = cx + W / 2 / S + 1, y0 = cy - (H / 2) / (S * SA) - 1.6, y1 = cy + (H / 2) / (S * SA) + 0.5;
     for (let bj = Math.max(0, Math.floor((y0 + half) / 4)); bj <= Math.min(VB - 1, Math.floor((y1 + half) / 4)); bj++) for (let bi = Math.max(0, Math.floor((x0 + half) / 4)); bi <= Math.min(VB - 1, Math.floor((x1 + half) / 4)); bi++) {
-      const bm = T.vb[bj * VB + bi]; if (!(bm & 1) && !(grass && bm & 2)) continue; const gx0 = bi * 4 - half, gy0 = bj * 4 - half;
+      const bm = T.vb[bj * VB + bi]; if (!(bm & 1) && !(grass && bm & 2) && !(tall && bm & 4)) continue; const gx0 = bi * 4 - half, gy0 = bj * 4 - half;
       for (let gy = gy0 + sp / 2; gy < gy0 + 4; gy += sp) { const gj = Math.round(gy * 10); for (let gx = gx0 + sp / 2; gx < gx0 + 4; gx += sp) { const gi = Math.round(gx * 10);
         let hs = Math.imul(gi * 374761393 + gj * 668265263 | 0, 1274126177); hs = (hs ^ (hs >>> 15)) >>> 0; const n = (hs & 1023) / 1023, n2 = ((hs >>> 10) & 1023) / 1023;
         const jx = gx + (n - .5) * sp * 0.8, jy = gy + (n2 - .5) * sp * 0.8, ti = ((jx - T.x0) * res) | 0, tj = ((jy - T.y0) * res) | 0; if (ti < 0 || tj < 0 || ti >= tw || tj >= T.h) continue;
-        const kd = kind[tj * tw + ti]; if (kd !== 5 && !(grass && kd === 1 && n2 < 0.22)) continue;
+        const kd = kind[tj * tw + ti]; if (kd !== 5 && !(grass && kd === 1 && n2 < 0.22) && !(tall && kd === 6 && n2 < (grass ? 0.5 : 0.3))) continue;
         if (F[(((jy + half) * 4) | 0) * FN + (((jx + half) * 4) | 0)]) continue;
-        const ht = kd === 5 ? 0.72 + 0.22 * n : 0.1 + 0.2 * n, w = Math.sin(time * 1.7 + jx * 0.42 + jy * 0.27) + 0.4 * Math.sin(time * 3.1 + jx * 1.3), sw = w * 0.05 * ht;
+        const ht = kd === 5 ? 0.72 + 0.22 * n : kd === 6 ? 0.28 + 0.32 * n : 0.1 + 0.2 * n, w = Math.sin(time * 1.7 + jx * 0.42 + jy * 0.27) + 0.4 * Math.sin(time * 3.1 + jx * 1.3), sw = w * 0.05 * ht;
+        // ponta (espiga ou folha)
         const X = jx + sw - cx, Y = jy + sw * 0.5 - cy, sx = W / 2 + X * S, sy = H / 2 - (Y * SA + ht * CA) * S, d = Y * CA - ht * SA, ix = sx | 0, iy = sy | 0;
-        if (ix < 0 || iy < 0 || ix >= W || iy >= H) continue; const p = iy * W + ix; if (d >= zb[p]) continue;
-        let r, g, b; if (kd === 5) { const k = 0.78 + 0.32 * n2 + 0.08 * w; r = 214 * k; g = 182 * k; b = 100 * k; } else { const k = 0.85 + 0.3 * n; r = 82 * k; g = 128 * k; b = 54 * k; }
-        u32[p] = pack(r > 255 ? 255 : r, g > 255 ? 255 : g, b);
-        if (kd === 5 && S * ht * CA > 3 && iy + 1 < H && d < zb[p + W]) u32[p + W] = pack(r * 0.72, g * 0.7, b * 0.62); } } } }
+        if (ix < -vx || iy < -2 * vx || ix >= W + vx || iy >= H) continue;
+        let r, g, b, sr, sg, sb2; if (kd === 5) { const k = 0.78 + 0.32 * n2 + 0.08 * w; r = 214 * k; g = 182 * k; b = 100 * k; sr = 168 * k; sg = 148 * k; sb2 = 78 * k; }
+        else if (kd === 6) { const k = 0.8 + 0.35 * n; r = 96 * k; g = 136 * k; b = 58 * k; sr = 60 * k; sg = 92 * k; sb2 = 42 * k; } else { const k = 0.85 + 0.3 * n; r = 82 * k; g = 128 * k; b = 54 * k; sr = r * 0.8; sg = g * 0.8; sb2 = b * 0.8; }
+        const cT = pack(r > 255 ? 255 : r, g > 255 ? 255 : g, b), cS = pack(sr, sg, sb2);
+        if (!vox) { if (ix < 0 || iy < 0 || ix >= W) continue; const p = iy * W + ix; if (d >= zb[p]) continue; u32[p] = cT;
+          if (kd === 5 && S * ht * CA > 3 && iy + 1 < H && d < zb[p + W]) u32[p + W] = pack(r * 0.72, g * 0.7, b * 0.62); continue; }
+        // de perto: espiga de 1 voxel de largura e ~2 de altura, haste fina até o chão (cada linha com a sua profundidade)
+        const eh = kd === 5 ? Math.max(2, Math.round(0.17 * CA * S)) : Math.max(1, Math.round(0.06 * CA * S)), ew = kd === 5 ? vx : sw1, gY = jy - cy, by = H / 2 - gY * SA * S, bx = W / 2 + (jx - cx) * S, top = iy;
+        for (let yy = top; yy < by; yy++) { if (yy < 0 || yy >= H) continue; const f = (by - yy) / (by - top || 1), z = ht * f, dz = gY * CA - z * SA, xc = (bx + (sx - bx) * f) | 0, ear = yy < top + eh;
+          const wpx = ear ? ew : sw1, x0p = xc - (wpx >> 1), row = yy * W, c = ear ? cT : cS;
+          for (let xx = x0p; xx < x0p + wpx; xx++) { if (xx < 0 || xx >= W) continue; const p = row + xx; if (dz < zb[p]) { u32[p] = c; } } } } } } }
   // névoa de guerra: escurece o chão (e o que está em cima dele) onde o time não enxerga. vis = grade de 1 m, 0..255
   fog(vis, N, half) { const cam = this.cam, S = cam.S, W = this.W, H = this.H, u = this.u32, cx = cam.x + cam.ox, cy = cam.y + cam.oy, B = 3;
     for (let y = 0; y < H; y += B) { const wy = cy + (H / 2 - y - B / 2) / (S * SA) + half - 0.5, j = Math.floor(wy), fy = wy - j;
@@ -261,7 +271,7 @@ function buildGround(M) {
   const theme = MAPGEN.THEMES[M.theme];
   for (const f of M.fields) {
     const i0 = Math.max(0, Math.floor((f.x0 - x0) * res)), i1 = Math.min(w, Math.ceil((f.x1 - x0) * res)), j0 = Math.max(0, Math.floor((f.y0 - y0) * res)), j1 = Math.min(h, Math.ceil((f.y1 - y0) * res));
-    const c = f.col, fs = f.s % 1000, fk = c[1] > c[0] * 1.08 ? 1 : c[0] > 160 && c[1] > 145 ? 5 : f.dir ? 4 : 2;   // 5 = trigo alto
+    const c = f.col, fs = f.s % 1000, fk = c[1] > c[0] * 1.08 ? 1 : MAPGEN.isWheatCol(c) ? 5 : f.dir ? 4 : 2;   // 5 = trigo alto
     for (let j = j0; j < j1; j++) { const wy = y0 + (j + .5) / res; for (let i = i0; i < i1; i++) { const wx = x0 + (i + .5) / res;
       const n = vnoise(wx / 7 + fs, wy / 7), n2 = hash(i, j), m = vnoise(wx / 1.7 + 30, wy / 1.7 + fs);
       let k = 0.86 + 0.22 * n + 0.06 * n2;
@@ -270,6 +280,14 @@ function buildGround(M) {
       if (edge < 0.9) { const e = edge / 0.9; r = lerp(92, r, e); g = lerp(112, g, e); b = lerp(58, b, e); }
       if (n2 > 0.97) { r *= 0.82; g *= 0.86; b *= 0.8; }
       base[j * w + i] = pack(r, g, b); kind[j * w + i] = edge < 0.9 ? 1 : fk; } } }
+  // chão dos bosques: folhas secas, musgo e capim (6), com uma faixa de grama na borda
+  for (const W of M.woods || []) { const R = W.r * 1.3, leaf = M.theme === 'kursk' ? [[96, 104, 58], [126, 108, 66], [70, 84, 46]] : [[78, 92, 50], [104, 86, 58], [58, 74, 42]];
+    for (let j = Math.max(0, Math.floor((W.y - R - y0) * res)); j < Math.min(h, Math.ceil((W.y + R - y0) * res)); j++) { const wy = y0 + (j + .5) / res;
+      for (let i = Math.max(0, Math.floor((W.x - R - x0) * res)); i < Math.min(w, Math.ceil((W.x + R - x0) * res)); i++) { const wx = x0 + (i + .5) / res, e = MAPGEN.woodEdge(W, wx, wy); if (e < -1.2) continue;
+        const p = j * w + i; if (kind[p] === 3) continue; const n = vnoise(wx / 1.3 + W.s, wy / 1.3), n2 = hash(i, j), m = vnoise(wx / 4 + 40, wy / 4 + W.s);
+        const c = n > 0.62 ? leaf[1] : m > 0.55 ? leaf[2] : leaf[0], k = 0.84 + 0.2 * n2 + 0.1 * m;
+        if (e < 0.6) { const c0 = base[p], t = clamp((e + 1.2) / 1.8, 0, 1) * 0.85; base[p] = pack(lerp(c0 & 255, c[0] * k, t), lerp((c0 >> 8) & 255, c[1] * k, t), lerp((c0 >> 16) & 255, c[2] * k, t)); kind[p] = 1; continue; }
+        base[p] = pack(c[0] * k, c[1] * k, c[2] * k); kind[p] = 6; } } }
   // estradas de terra com sulcos
   for (const rd of M.roads) { const hw = rd.w / 2;
     for (let s = 1; s < rd.pts.length; s++) { const a = rd.pts[s - 1], b = rd.pts[s], ex = b[0] - a[0], ey = b[1] - a[1], L2 = ex * ex + ey * ey, L = Math.sqrt(L2);
@@ -290,7 +308,9 @@ function buildGround(M) {
   composite(T, 0, 0, w, h);
   // vegetação alta: blocos de 4 m que têm trigo (1) ou grama (2), e o mapa do que foi amassado (células de 25 cm)
   const VB = Math.ceil(M.size / 4); T.vb = new Uint8Array(VB * VB); T.vbN = VB; T.flat = new Uint8Array(M.size * 4 * M.size * 4); T.flatN = M.size * 4;
-  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) { const kd = kind[j * w + i]; if (kd !== 5 && kd !== 1) continue; const b = Math.floor(j / res / 4) * VB + Math.floor(i / res / 4); T.vb[b] |= kd === 5 ? 1 : 2; }
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) { const kd = kind[j * w + i]; if (kd !== 5 && kd !== 1 && kd !== 6) continue; const b = Math.floor(j / res / 4) * VB + Math.floor(i / res / 4); T.vb[b] |= kd === 5 ? 1 : kd === 6 ? 4 : 2; }
+  // nada de trigo nem capim atravessando piso, parede, feno ou carroça: o que tem voxel nos primeiros 40 cm tapa a vegetação embaixo
+  for (const pr of M.props) flatUnder(T, pr);
   return T;
 }
 function composite(T, i0, j0, i1, j1) { const { w, base, data, shade } = T; i0 = Math.max(0, i0); j0 = Math.max(0, j0); i1 = Math.min(T.w, i1); j1 = Math.min(T.h, j1); texChanged(T, i0, j0, i1, j1);
@@ -314,7 +334,7 @@ function detTile(T, tx, ty) { const key = ty * 1024 + tx, C = T.tiles; let t = C
       if (fx >= 0 && gy >= 0 && fx < tw && gy < th) { const p = (gy | 0) * tw + (fx | 0), c = data[p], kd = kind[p], n = (h >>> 16) & 255;
         let r = c & 255, g = (c >> 8) & 255, b = (c >> 16) & 255, k;
         if (kd === 3) { if (n > 240) { r = r * 0.4 + 100; g = g * 0.4 + 94; b = b * 0.4 + 82; k = 1; } else k = n < 28 ? 0.82 : 0.94 + n * 0.00047; }           // estrada: pedrinhas
-        else if (kd === 1) { let m = (((wx + 4096) * 2.5) | 0) * 1103515245 + mjh | 0; m = Math.imul(m ^ (m >>> 15), 2246822519) >>> 24;               // grama: tufos em moitas
+        else if (kd === 1 || kd === 6) { let m = (((wx + 4096) * 2.5) | 0) * 1103515245 + mjh | 0; m = Math.imul(m ^ (m >>> 15), 2246822519) >>> 24;               // grama: tufos em moitas
           if (m > 140 && n > 185) { k = 1.12; g += 8; } else k = n < 22 ? 0.85 : 0.95 + n * 0.0004; }
         else { const pc = (kd === 4 ? ci : cj) & 3; k = pc === 0 ? 0.86 : n > 214 ? 1.1 : n < 30 ? 0.9 : 0.97 + n * 0.0002; }                     // lavoura: fileiras e torrões
         r *= k; g *= k; b *= k; v = pack(r > 255 ? 255 : r, g > 255 ? 255 : g, b > 255 ? 255 : b); }
@@ -341,6 +361,9 @@ function paint(T, x, y, col, a) { const p = texIdx(T, x, y); if (p < 0) return; 
 function flatten(T, x, y, h, len, wid) { const F = T.flat; if (!F) return; const N = T.flatN, c = Math.cos(h), s = Math.sin(h), hl = len / 2, hw = wid / 2, R = Math.hypot(hl, hw);
   for (let j = Math.floor((y - R + T.M.half) * 4); j <= Math.ceil((y + R + T.M.half) * 4); j++) for (let i = Math.floor((x - R + T.M.half) * 4); i <= Math.ceil((x + R + T.M.half) * 4); i++) { if (i < 0 || j < 0 || i >= N || j >= N) continue;
     const dx = (i + .5) / 4 - T.M.half - x, dy = (j + .5) / 4 - T.M.half - y, u = dx * c + dy * s, v = -dx * s + dy * c; if (Math.abs(u) <= hl && Math.abs(v) <= hw) F[j * N + i] = 1; } }
+function flatUnder(T, pr) { const F = T.flat; if (!F || pr.visual) return; const N = T.flatN, h = T.M.half, nx = pr.nx, nxy = nx * pr.ny, lim = nxy * 4, L = pr.list;
+  for (let a = 0; a < L.length; a++) { const idx = L[a]; if (idx >= lim) break; if (!pr.mat[idx]) continue; const i = idx % nx, j = ((idx / nx) | 0) % pr.ny;
+    const ci = ((pr.x0 + (i + .5) * PVS + h) * 4) | 0, cj = ((pr.y0 + (j + .5) * PVS + h) * 4) | 0; if (ci >= 0 && cj >= 0 && ci < N && cj < N) F[cj * N + ci] = 1; } }
 function flattenDisc(T, x, y, r) { const F = T.flat; if (!F) return; const N = T.flatN;
   for (let j = Math.floor((y - r + T.M.half) * 4); j <= Math.ceil((y + r + T.M.half) * 4); j++) for (let i = Math.floor((x - r + T.M.half) * 4); i <= Math.ceil((x + r + T.M.half) * 4); i++) { if (i < 0 || j < 0 || i >= N || j >= N) continue;
     if (((i + .5) / 4 - T.M.half - x) ** 2 + ((j + .5) / 4 - T.M.half - y) ** 2 < r * r) F[j * N + i] = 1; } }

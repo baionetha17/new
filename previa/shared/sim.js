@@ -457,7 +457,8 @@ class Tank {
     const step = 0.02, nS = Math.ceil((maxLen || 10) / step);
     let pen = pen0, inside = false, inArmor = false, lastMod = 0, travelIn = 0, fuse = false, ricN = 0;
     const world = [pos.slice()];
-    const rep = { A, res: null, plate: null, t: 0, t0: 0, ang: 0, eff: 0, ric: 0, pen: pen0, mods: [], crew: [], ext: null, ground: false, blast: null, fused: false };
+    const rep = { A, res: null, plate: null, t: 0, t0: 0, ang: 0, eff: 0, ric: 0, pen: pen0, mods: [], crew: [], ext: null, ground: false, blast: null, fused: false,
+      frags: dry ? null : [], mids: dry ? null : [], cids: dry ? null : [] };
     const W = [0, 0, 0];
     for (let s = 0; s < nS; s++) {
       pos[0] += dir[0] * step; pos[1] += dir[1] * step; pos[2] += dir[2] * step;
@@ -482,7 +483,9 @@ class Tank {
             for (let a = 0; a < 3; a++) pos[a] += dir[a] * 0.08; inArmor = true; continue; }
           if (A.t === 'HE' && pen < eff) { rep.res = rep.res === 'pen' ? 'pen' : rep.res === 'ric' ? 'ric' : 'non'; world.push(pos.slice()); this.heBlast(pos, A, n, rep); rep.blast = pos.slice(); break; }
           if (pen >= eff) {
-            rep.res = 'pen'; inside = true; rep.plate = PL[g.plate[idx]].n; rep.t = th; rep.t0 = g.t0[idx]; rep.ang = ang; rep.eff = eff; rep.pen = pen; pen -= eff; world.push(pos.slice());
+            // a análise mostra a primeira placa que o projétil furou (depois ele ainda pode sair e furar outra)
+            if (rep.res !== 'pen') { rep.plate = PL[g.plate[idx]].n; rep.t = th; rep.t0 = g.t0[idx]; rep.ang = ang; rep.eff = eff; rep.pen = pen; rep.at = pos.slice(); }
+            rep.res = 'pen'; inside = true; pen -= eff; world.push(pos.slice());
             this.punch(g, idx, A);
             this.sparks(pos, n, 50, 1.8); this.debris(pos, n, g, idx, 10);
             const nf = A.t === 'HEAT' ? 8 : Math.round((A.cal / 5) * (A.t === 'APCR' ? 1.2 : 1) * clamp(1 + pen / 60, 1, 2) + 6);
@@ -519,7 +522,7 @@ class Tank {
         if (pen <= 0) { world.push(pos.slice()); if (fuse) { this.explodeInside(pos.slice(), A, rep); rep.fused = true; } break; }
       }
     }
-    world.push(pos.slice()); rep.end = pos.slice(); rep.dir = dir;
+    world.push(pos.slice()); rep.end = pos.slice(); rep.dir = dir; rep.path = world;
     if (!rep.res) rep.res = 'miss';
     if (!dry && ricN > 0) { const e = [pos[0] + dir[0] * 40, pos[1] + dir[1] * 40, Math.max(0, pos[2] + dir[2] * 40)]; const pts = []; for (const q of world) pts.push(r2(q[0]), r2(q[1]), r2(q[2])); pts.push(r2(e[0]), r2(e[1]), r2(e[2])); this.emit(['tr', pts]); }
     if (!dry) this.flush();
@@ -546,7 +549,11 @@ class Tank {
       const d = nrm([dir[0] + (u[0] * Math.cos(a) + v[0] * Math.sin(a)) * c, dir[1] + (u[1] * Math.cos(a) + v[1] * Math.sin(a)) * c, dir[2] + (u[2] * Math.cos(a) + v[2] * Math.sin(a)) * c]);
       this.fragment(p, d, en * (0.45 + rnd() * 0.55), len * (0.6 + rnd() * 0.6), rep, kind); } }
   fragment(p0, d, en, maxLen, rep, kind) {
-    const pos = p0.slice(), H = { g: null, idx: -1 }; let inA = true, last = 0, L = 0; const step = 0.04; const W = [0, 0, 0];
+    const pos = p0.slice(), H = { g: null, idx: -1, hit: 0 };
+    this.fragOne(p0, d, en, maxLen, rep, kind, pos, H);
+    if (rep && rep.frags && rep.frags.length < 900) rep.frags.push(r2(p0[0]), r2(p0[1]), r2(p0[2]), r2(pos[0]), r2(pos[1]), r2(pos[2]), H.hit ? 1 : 0); }
+  // um estilhaço andando pelo tanque (pos termina onde ele parou; H.hit diz se acertou algum módulo ou tripulante)
+  fragOne(p0, d, en, maxLen, rep, kind, pos, H) { let inA = true, last = 0, L = 0; const step = 0.04; H.hit = 0;
     while (L < maxLen && en > 0.05) {
       pos[0] += d[0] * step; pos[1] += d[1] * step; pos[2] += d[2] * step; L += step;
       if (pos[2] < 0) break;
@@ -557,7 +564,7 @@ class Tank {
         if (rnd() < 0.25) { g.burn[idx] = Math.min(1, g.burn[idx] + 0.1); this.touch(g, idx); }
         break; }
       inA = false; const mid = g.mod[idx]; if (mid === last) continue; last = mid; const o = this.MOD[mid];
-      this.hurt(o, 25 + 70 * en, kind, rep, pos, en);
+      this.hurt(o, 25 + 70 * en, kind, rep, pos, en); H.hit = 1;
       en -= o.kind === 'crew' ? 0.45 : o.abs / 40;
     } }
   explodeInside(p, A, rep) {
@@ -585,9 +592,10 @@ class Tank {
   hurt(o, dmg, cause, rep, wpos, en) {
     if (this.destroyed && o.kind === 'crew') return;
     if (o.dead && o.kind !== 'ammo') return;
+    if (rep && rep.mids && !rep.mids.includes(o.id)) rep.mids.push(o.id);
     if (o.kind === 'crew') {
       const killP = cause === 'shell' ? 1 : cause === 'he' ? 0.45 + 0.5 * (en || 1) : cause === 'blast' ? 0.3 : 0.35 + 0.5 * (en || 1);
-      if (rnd() < killP || dmg >= 999) { if (!o.dead && rep && !rep.crew.includes(o.name)) rep.crew.push(o.name); this.kill(o); }
+      if (rnd() < killP || dmg >= 999) { if (!o.dead && rep && !rep.crew.includes(o.name)) { rep.crew.push(o.name); if (rep.cids) rep.cids.push(o.id); } this.kill(o); }
       return; }
     if (o.dead) return;
     o.hp -= dmg; if (rep && !rep.mods.includes(o.name)) rep.mods.push(o.name);

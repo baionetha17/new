@@ -16,18 +16,18 @@ function start(msg, send, exitFn) {
   const T = RENDER.buildGround(M);
   const cv = $('#gameCanvas');
   st = { msg, M, T, view: new RENDER.View(cv), tanks: new Map(), ciNext: 0, byCi: [], mySlot: msg.slot, team: msg.team, mode: msg.mode, names: msg.names || {},
-    slots: Object.fromEntries(msg.tanks.map(t => [t.id, t])), me: null, myEnt: null, g: null, shells: new Map(), tracers: [], bullets: [], heat: new Set(),
+    slots: Object.fromEntries(msg.tanks.map(t => [t.id, t])), me: null, myEnt: null, g: null, shells: new Map(), tracers: [], bullets: [], mgQ: [], soft: [], wheatFires: [], skulls: [], heat: new Set(),
     mouse: { x: 0, y: 0, in: false }, keys: {}, rmb: false, camOff: [0, 0], fireN: 0, repN: 0, smkN: 0, smokes: [], lobs: [], sel: 0, aim: [0, 0, 0], hover: null, hoverT: 0,
     offset: null, lastSnap: 0, feed: [], shake: 0, paused: false, spec: null, last: performance.now(), hudT: 0, mmT: 0, reloadLocal: 0, seenAt: new Map(), loadedPrev: null, dirty: [], falling: [], drops: [] };
   st.zoom = 64 / 6.6 * st.view.GBcss; st.view.cam.S = st.zoom / st.view.PX;   // zoom em pixels de tela por metro
-  st.mm = buildMinimapBase(M, T); fogInit(); wiresInit();
+  st.mm = buildMinimapBase(M, T); fogInit(); wiresInit(); HITCAM.init();
   $('#hudMode').textContent = msg.modeName + ' · ' + MAPGEN.THEMES[msg.map].short;
   $('#feed').innerHTML = ''; $('#centerMsg').hidden = true; $('#pause').hidden = true; $('#analysis').hidden = true;
   bindInput(cv);
   clearInterval(inTimer); inTimer = setInterval(sendInput, 33);
   cancelAnimationFrame(raf); raf = requestAnimationFrame(frame);
 }
-function stop() { clearInterval(inTimer); cancelAnimationFrame(raf); unbindInput(); AUDIO.engine(false, 0); st = null; }
+function stop() { clearInterval(inTimer); cancelAnimationFrame(raf); unbindInput(); AUDIO.engine(false, 0); HITCAM.hide(); st = null; }
 
 // ================================================================ rede
 function onSnap(m) {
@@ -69,6 +69,8 @@ function leafFx(pr, rem, stride, frac) { if (!pr.cr || !rem.length) return; cons
   for (let q = 0; q < rem.length && n < 40; q += stride) { if (Math.random() > frac) continue; const idx = rem[q]; MAPGEN.propCenter(pr, idx, P); const c = [pr.cr[idx], pr.cg[idx], pr.cb[idx]];
     if (!(c[1] > c[0] * 1.15 || (c[0] > 150 && c[1] > 120 && c[2] < 110))) continue; st.view.leaves(P, 2, c); n++; } }
 function markDirty(pr) { if (!pr.dirty) { pr.dirty = true; st.dirty.push(pr); } }
+// lasca de bala: casa grande leva alguns ms para redesenhar, então junta as lascas e redesenha no máximo 4 vezes por segundo
+function softDirty(pr) { if (!pr.soft) { pr.soft = true; st.soft.push(pr); } }
 // árvore caindo: guarda os voxels de pé para animar a queda
 function startFall(pr, dir) { if (!pr.R) RENDER.prepProp(pr); const ux = [1, 0, -1, 0][dir], uy = [0, 1, 0, -1][dir], R = pr.R, vis = R.vis, sa = [], ta = [], z = [], col = [], tr = pr.trunkR || 0.15;
   for (let q = 0; q < vis.length; q++) { const a = vis[q], idx = pr.list[a]; if (!pr.mat[idx]) continue; const x = pr.x0 + R.lx[a] - pr.cx, y = pr.y0 + R.ly[a] - pr.cy;
@@ -108,7 +110,10 @@ function handleEv(e) {
       for (let i = 0; i < 260; i++) { const a = Math.random() * Math.PI * 2, u = Math.random(); V.particles.push({ k: 3, x: c[0], y: c[1], z: c[2] + 0.4, vx: Math.cos(a) * u * 7, vy: Math.sin(a) * u * 7, vz: 4 + Math.random() * 12, life: 5 + Math.random() * 8, col: Math.random() < 0.5 ? [60, 62, 64] : [40, 36, 32], sz: 1, keep: Math.random() < 0.35 }); }
       AUDIO.boom(distTo(c), true); RENDER.stampScorch(T, ct.x, ct.y, 5); break; }
     case 'rs': { const ct = tankOf(e[1]); if (ct) ct.tk.restoreTrack(e[2]); break; }
-    case 'md': { const ct = tankOf(e[1]); if (ct) ct.tk.setDead(e[2]); break; }
+    case 'md': { const ct = tankOf(e[1]); if (!ct) break; const was = new Set(ct.tk.MOD.filter(o => o && o.kind === 'crew' && o.dead).map(o => o.id)); ct.tk.setDead(e[2]);
+      // caveirinha subindo de onde estava cada tripulante que acabou de morrer (só de tanque que a gente vê ou é do time)
+      if (ct.vis || ct.team === st.team || ct.id === st.myEnt) for (const o of ct.tk.MOD) if (o && o.kind === 'crew' && o.dead && !was.has(o.id)) st.skulls.push({ ct, o, t: 0, dl: st.skulls.length % 3 * 0.15 });
+      break; }
     case 'shot': { const [, sid, eid, x, y, z, vx, vy, vz, kind] = e; const sp = Math.hypot(vx, vy, vz);
       st.shells.set(sid, { pos: [x, y, z], prev: [x, y, z], vel: [vx, vy, vz], t: 0, kind, from: eid });
       V.muzzle([x, y, z], [vx / sp, vy / sp, vz / sp]); AUDIO.cannon(distTo([x, y])); if (eid === st.myEnt) st.shake = Math.max(st.shake, 0.35); break; }
@@ -118,19 +123,21 @@ function handleEv(e) {
       if (e[4]) { const pr = MAPGEN.addVisual(M, MAPGEN.craterRim(e[1], e[2], e[3], (e[1] * 97 + e[2] * 31) | 0)); RENDER.prepProp(pr);
         for (let i = 0; i < 24; i++) { const a = Math.random() * Math.PI * 2, d = e[3] * (0.6 + Math.random() * 0.8); V.chunk([e[1] + Math.cos(a) * 0.3, e[2] + Math.sin(a) * 0.3, 0.3], [96 + Math.random() * 30, 80 + Math.random() * 20, 58], 1.6, 1.5, true); } }
       break; }
-    case 'pt': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.tunnel(pr, e[2], e[3]); if (e[4]) mgChips(pr, rem); else propBits(pr, rem, 1.1, 0.06); leafFx(pr, rem, 1, 0.15); markDirty(pr); break; }
+    case 'pt': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.tunnel(pr, e[2], e[3]); if (e[4]) mgChips(pr, rem); else propBits(pr, rem, 1.1, 0.06); leafFx(pr, rem, 1, 0.15); if (e[4]) softDirty(pr); else markDirty(pr); break; }
     case 'smf': { st.lobs.push({ a: [e[2], e[3], e[4]], b: [e[5], e[6], 0], t: 0, T: e[7] }); AUDIO.thud(distTo([e[2], e[3]])); st.view.particles.push({ k: 2, x: e[2], y: e[3], z: e[4], vx: 0, vy: 0, vz: 0.5, life: 1.5, max: 1.5, r0: 0.1, r1: 0.6, col: [180, 178, 170] }); break; }
     case 'sm': st.smokes.push({ x: e[2], y: e[3], R: e[4], life: e[5], grow: e[6], t: 0, s: e[1] }); break;
-    case 'mg': { const a = [e[3], e[4], e[5]], b = [e[6], e[7], e[8]], L = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]), ct = st.tanks.get(e[1]), M2 = ct && ct.tk.game.mg;
-      st.bullets.push({ a, b, L, t: 0, T: Math.max(0.07, L / (M2 ? M2.v : 800)), hit: e[9], tr: (st.mgN = (st.mgN || 0) + 1) % 3 === 0, de: ct && ct.tk.game.flag === 'de' });
-      if (Math.random() < 0.5) st.view.particles.push({ k: 4, x: a[0], y: a[1], z: a[2], life: 0.05, max: 0.05, r: 0.35 });
-      if (Math.random() < 0.6) st.view.chunk([a[0] - (b[0] - a[0]) / L * 0.6, a[1] - (b[1] - a[1]) / L * 0.6, a[2] - 0.1], [206, 164, 72], 0.5, 0.35, Math.random() < 0.2);   // cartucho
-      AUDIO.mg(distTo(a), M2 && M2.rate > 10); break; }
+    // tiro de metralhadora: entra numa fila e sai na hora certa (o servidor manda a hora de cada bala), para rajada não chegar embolada
+    case 'mg': if (e[10] !== undefined && st.offset !== null) st.mgQ.push(e); else mgShot(e); break;
+    case 'wf': wheatFireStart(e[1], e[2], e[3], e[4]); break;
+    // câmera de acerto: tiro nosso que acertou alguém, ou tiro que acertou a gente
+    case 'hc': { const d = HITCAM.unpack(e), ct = tankOf(d.to); if (!ct) break;
+      if (d.from === st.myEnt && d.to !== st.myEnt) HITCAM.show('out', d, ct.tk); else if (d.to === st.myEnt) HITCAM.show('in', d, ct.tk); break; }
     case 'pq': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.crushBox(pr, e[2], e[3], e[4], e[5], e[6], e[7], 2.6); const P = [0, 0, 0];
       for (let i = 0; i < rem.length; i += 3) { const idx = rem[i]; MAPGEN.propCenter(pr, idx, P); RENDER.paint(T, P[0] + (Math.random() - .5) * 0.4, P[1] + (Math.random() - .5) * 0.4, [pr.cr[idx] * 0.8, pr.cg[idx] * 0.8, pr.cb[idx] * 0.8], 0.5); }
-      propBits(pr, rem, 0.5, 0.04); leafFx(pr, rem, 3, 0.05); if (rem.length && Math.random() < 0.25) AUDIO.crunch(distTo([e[2], e[3]])); markDirty(pr); break; }
+      propBits(pr, rem, 0.5, 0.04); leafFx(pr, rem, 3, 0.05);
+      if (rem.length) { const leafy = pr.kind === 'bush' || pr.kind === 'hedge' || pr.kind === 'tree', now = performance.now(); if (now - (st.brushT || 0) > 140) { st.brushT = now; if (leafy) AUDIO.brush(distTo([e[2], e[3]]), false); else if (Math.random() < 0.35) AUDIO.crunch(distTo([e[2], e[3]])); } } markDirty(pr); break; }
     case 'pd': { const pr = M.props[e[1]]; if (!pr || pr.fallen) break; startFall(pr, e[2]); MAPGEN.fell(M, pr, e[2]); RENDER.prepProp(pr); pr.dirty = false; RENDER.reshadow(T, pr);
-      AUDIO.crunch(distTo([pr.cx, pr.cy])); break; }
+      if (pr.kind === 'tree') { AUDIO.brush(distTo([pr.cx, pr.cy]), pr.tree !== 'sapling'); leafFx(pr, pr.list, 40, 0.5); } else AUDIO.crunch(distTo([pr.cx, pr.cy])); break; }
     // tanque atravessando a casa
     case 'pp': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.push(pr, e[2], e[3], e[4], e[5], e[6]); if (!rem.length) break; const P = [0, 0, 0];
       for (let i = 0; i < rem.length; i += 4) { const idx = rem[i]; MAPGEN.propCenter(pr, idx, P); RENDER.paint(T, P[0] + (Math.random() - .5) * 0.6, P[1] + (Math.random() - .5) * 0.6, [pr.cr[idx] * 0.8, pr.cg[idx] * 0.8, pr.cb[idx] * 0.8], 0.5); }
@@ -164,6 +171,11 @@ function handleEv(e) {
       if (vEnt === st.myEnt) showCenter(cause === 'ammo' ? 'A munição detonou' : 'Tanque destruído', 3); break; }
   }
 }
+function mgShot(e) { const a = [e[3], e[4], e[5]], b = [e[6], e[7], e[8]], L = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) || 0.1, ct = st.tanks.get(e[1]), M2 = ct && ct.tk.game.mg;
+  st.bullets.push({ a, b, L, t: 0, T: Math.max(0.07, L / (M2 ? M2.v : 800)), hit: e[9], tr: (st.mgN = (st.mgN || 0) + 1) % 3 === 0, de: ct && ct.tk.game.flag === 'de' });
+  if (Math.random() < 0.5) st.view.particles.push({ k: 4, x: a[0], y: a[1], z: a[2], life: 0.05, max: 0.05, r: 0.35 });
+  if (Math.random() < 0.6) st.view.chunk([a[0] - (b[0] - a[0]) / L * 0.6, a[1] - (b[1] - a[1]) / L * 0.6, a[2] - 0.1], [206, 164, 72], 0.5, 0.35, Math.random() < 0.2);   // cartucho
+  AUDIO.mg(distTo(a), M2 && M2.rate > 10); }
 function slotName(id) { const s = st.slots[id]; if (!s) return '?'; if (s.bot) return 'IA (' + SIM.TANKS[s.type].short + ')';
   const n = [s.driver, s.gunner].filter((v, i, a) => v && a.indexOf(v) === i).map(p => st.names[p] || '?'); return n.join(' + ') || SIM.TANKS[s.type].short; }
 function feed(text, cls) { const el = document.createElement('div'); el.className = 'f ' + (cls || ''); el.textContent = text; const box = $('#feed'); box.prepend(el); while (box.children.length > 6) box.lastChild.remove(); setTimeout(() => el.classList.add('old'), 6000); setTimeout(() => el.remove(), 9000); }
@@ -177,9 +189,11 @@ function bindInput(cv) {
     if (k === 'escape') { togglePause(); e.preventDefault(); return; }
     if (st.paused) return;
     st.keys[k] = true;
+    if (e.repeat) { if (k === ' ' || k === 'g' || k === 'r' || k.startsWith('arrow')) e.preventDefault(); return; }
     if (k >= '1' && k <= '5') { const i = +k - 1; const tk = myTank(); if (tk && i < tk.tk.game.ammo.length) st.sel = i; }
     if (k === 'r') st.repN++;
     if (k === 'g') st.smkN++;
+    if (k === 'h') HITCAM.replay();
     if (k === ' ') { cycleSpec(); e.preventDefault(); }
     if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault(); };
   handlers.ku = e => { if (st) st.keys[e.key.toLowerCase()] = false; };
@@ -215,12 +229,13 @@ function quit() { net({ t: 'quit' }); const fn = onExit; stop(); if (fn) fn(); }
 // ================================================================ quadro
 function frame(nowMs) {
   if (!st) return; raf = requestAnimationFrame(frame);
-  const dt = Math.min(0.05, (nowMs - st.last) / 1000); st.last = nowMs;
+  const rdt = Math.min(0.5, Math.max(0, (nowMs - st.last) / 1000)), dt = Math.min(0.05, rdt); st.last = nowMs;
   const V = st.view; V.resize();
   { const [zmin, zmax] = zoomLimits(); st.zoom = clamp(st.zoom, zmin, zmax);
     // voxel com menos de ~4 pixels na tela: desenha em 1x1 para não borrar; maior que isso, volta ao pixel do chão
     const vpx = SIM.VS * st.zoom; V.setPX(V.PX === 1 ? (vpx > 4.4 ? V.GBcss : 1) : (vpx < 3.6 ? 1 : V.GBcss)); V.cam.S = st.zoom / V.PX; }
   const now = nowMs / 1000, rt = st.offset === null ? 0 : now + st.offset - 0.1;
+  if (st.mgQ.length) { let n = 0; for (const e of st.mgQ) { if (e[10] > rt) break; if (e[10] > rt - 1) mgShot(e); n++; } if (n) st.mgQ.splice(0, n); }
   // poses interpoladas
   for (const ct of st.tanks.values()) {
     const S = ct.snaps; let a = S[0], b = S[S.length - 1];
@@ -255,7 +270,7 @@ function frame(nowMs) {
   // calor das placas atingidas esfria
   for (const key of st.heat) { const [id, gid, i] = key.split(',').map(Number); const ct = tankOf(id); if (!ct) { st.heat.delete(key); continue; } const g = ct.tk.grid(gid); g.heat[i] -= dt * 0.35; if (g.heat[i] <= 0) { g.heat[i] = 0; st.heat.delete(key); } }
   V.updParticles(dt);
-  propFires(dt);
+  propFires(dt); wheatFx(rt, dt);
   // ---- desenho
   V.ground(st.T);
   if (st.g && st.mode === 'dom') { const z = st.M.zone, o = st.g.z[1]; const col = o === 0 ? [214, 164, 64] : o === 1 ? [111, 168, 220] : [230, 230, 220]; V.groundRing(z.x, z.y, z.r, col, 0.75); V.groundRing(z.x, z.y, z.r - 0.4, col, 0.35); }
@@ -263,12 +278,16 @@ function frame(nowMs) {
   for (const ct of st.tanks.values()) { const show = ct.vis || ct.id === st.myEnt || (ct.f & 1); if (!show || !V.tankOnScreen(ct.tk)) continue; drawn.push(ct); }
   for (const ct of drawn) { V.shadowGrid(ct.tk.GH, ct.tk.TH); V.shadowGrid(ct.tk.GT, ct.tk.TT); }
   V.applyShadow();
+  if (st.soft.length && now - (st.softT || 0) > 0.25) { st.softT = now; for (const pr of st.soft) { pr.soft = false; markDirty(pr); } st.soft.length = 0; }
   for (const pr of st.dirty) { RENDER.refreshProp(pr); RENDER.reshadow(st.T, pr); pr.dirty = false; if (pr.fire) firePoints(pr); fogProp(pr); } st.dirty.length = 0;
   // de perto, as casas perto do centro da tela aparecem em corte (sem telhado nem andar de cima)
   const cutR = st.zoom > 20 * V.GBcss ? 26 : 0;
   // casa com um tanque visto lá dentro: corta e desenha o telhado meio transparente por cima
   const ghost = new Set(); for (const ct of drawn) for (const id of MAPGEN.propsAlong(st.M, ct.x - 1, ct.y - 1, ct.x + 1, ct.y + 1)) { const pr = st.M.props[id], f = pr.foot;
     if (pr.struct && !pr.gone && ct.x > f[0] && ct.x < f[2] && ct.y > f[1] && ct.y < f[3] && inHouse(pr, ct)) ghost.add(pr); }
+  // copa de árvore por cima de um tanque visto: fica meio transparente para dar para ver o tanque embaixo
+  for (const ct of drawn) for (const id of MAPGEN.propsAlong(st.M, ct.x - 4, ct.y - 4, ct.x + 4, ct.y + 4)) { const pr = st.M.props[id];
+    if (pr.kind === 'tree' && pr.cutK && !pr.gone && !pr.fallen && !pr.falling && Math.hypot(pr.cx - ct.x, pr.cy - ct.y) < (pr.crownR || 2) + 2.2) ghost.add(pr); }
   for (const pr of st.M.props) if (!pr.gone) { const fl = pr.falling; if (!fl) V.splatProp(pr, 128 + pr.id, ghost.has(pr) || cutR && pr.struct && Math.abs(pr.cx - cam.x) < cutR && Math.abs(pr.cy - cam.y) < cutR); }
   for (let i = st.drops.length - 1; i >= 0; i--) { const f = st.drops[i]; f.t += dt; const u = Math.min(1, f.t / f.dur);
     if (u < 1) { V.splatDrop(f, f.drop * (1 - u * u)); continue; }
@@ -282,15 +301,15 @@ function frame(nowMs) {
   V.vegetation(st.T, nowMs / 1000);
   V.outline();
   drawAntennas(drawn);
-  for (const pr of ghost) if (!(cutR && Math.abs(pr.cx - cam.x) < cutR && Math.abs(pr.cy - cam.y) < cutR)) V.splatGhost(pr); V.blendGhost(0.32);
+  for (const pr of ghost) if (!(cutR && pr.struct && Math.abs(pr.cx - cam.x) < cutR && Math.abs(pr.cy - cam.y) < cutR)) V.splatGhost(pr); V.blendGhost(0.32);
   V.drawParticles();
   drawWires(nowMs / 1000);
   fogUpdate(dt); if (st.fog && st.fog.on) V.fog(st.fog.vis, st.fog.N, st.fog.half); drawGhosts(nowMs / 1000);
-  drawShells(dt); drawBullets(dt); drawSmoke(dt);
+  drawShells(dt); drawBullets(rdt); drawSmoke(dt);
   V.present();
   // ---- por cima
   updateAim(now);
-  overlay(dt, drawn);
+  overlay(dt, drawn); drawSkulls(rdt); HITCAM.frame(rdt);
   if (centerT > 0) { centerT -= dt; if (centerT <= 0) $('#centerMsg').hidden = true; }
   if (me && st.me) { st.reloadLocal = Math.min(1, st.reloadLocal + dt / (st.me.reloadT || 7)); AUDIO.engine(!(me.f & 1), Math.abs(st.me.v)); }
   if (now - st.hudT > 0.1) { st.hudT = now; hud(); }
@@ -326,6 +345,37 @@ function propFires(dt) { const V = st.view;
       if (Math.random() < 0.16) { const c = 42 + Math.random() * 30; V.particles.push({ k: 2, x, y, z: z + 0.4, vx: (Math.random() - .5) * 0.4, vy: (Math.random() - .5) * 0.4, vz: 1.4 + Math.random() * 1.2, life: 6 + Math.random() * 5, max: 11, r0: 0.3, r1: 2.8, col: [c, c * 0.96, c * 0.92] }); }
       if (Math.random() < 0.1) V.particles.push({ k: 9, x, y, z, vx: (Math.random() - .5) * 1, vy: (Math.random() - .5) * 1, vz: 1.5 + Math.random() * 2, life: 1.5 + Math.random() * 2.5, max: 4 });
       if (Math.random() < 0.05) V.particles.push({ k: 0, x, y, z, vx: (Math.random() - .5) * 2, vy: (Math.random() - .5) * 2, vz: 2 + Math.random() * 3, life: 0.8 + Math.random(), max: 1.6 }); } } }
+// ================================================================ trigo pegando fogo
+// Hora em que o fogo chega em cada célula de 0,5 m, por Dijkstra a partir do ponto e só pelo trigo: a favor do vento ~0,6 m/s,
+// de lado ~0,2 e contra ~0,1, com um ruído por célula para a frente ficar irregular. Todo navegador faz a mesma conta.
+const WHEAT_BURN = 7;
+function wheatFireStart(x, y, seed, t0) { const T = st.T, C = 0.5, R = 46, N = Math.ceil(2 * R / C), ox = x - R, oy = y - R, A = new Float32Array(N * N).fill(Infinity);
+  const ok = new Uint8Array(N * N); for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const wx = ox + (i + .5) * C, wy = oy + (j + .5) * C, ti = ((wx - T.x0) * T.res) | 0, tj = ((wy - T.y0) * T.res) | 0;
+    if (ti >= 0 && tj >= 0 && ti < T.w && tj < T.h && T.kind[tj * T.w + ti] === 5) ok[j * N + i] = 1; }
+  const wl = Math.hypot(SMOKE_WIND[0], SMOKE_WIND[1]), wx = SMOKE_WIND[0] / wl, wy = SMOKE_WIND[1] / wl, D = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+  const cost = D.map(([a, b]) => { const L = Math.hypot(a, b), c = (a * wx + b * wy) / L, v = 0.12 + 0.95 * ((c + 1) / 2) ** 2; return L * C / v; });
+  const hk = [], hv = []; const push = (k, v) => { let i = hk.length; hk.push(k); hv.push(v); while (i > 0) { const p = (i - 1) >> 1; if (hv[p] <= v) break; hk[i] = hk[p]; hv[i] = hv[p]; i = p; } hk[i] = k; hv[i] = v; };
+  const pop = () => { const k = hk[0], v = hv[0], lk = hk.pop(), lv = hv.pop(); if (hk.length) { let i = 0; for (;;) { let c = 2 * i + 1; if (c >= hk.length) break; if (c + 1 < hk.length && hv[c + 1] < hv[c]) c++; if (hv[c] >= lv) break; hk[i] = hk[c]; hv[i] = hv[c]; i = c; } hk[i] = lk; hv[i] = lv; } return [k, v]; };
+  const c0 = (N >> 1) * N + (N >> 1); if (!ok[c0]) return; A[c0] = 0; push(c0, 0);
+  while (hk.length) { const [k, v] = pop(); if (v > A[k]) continue; const i = k % N, j = (k / N) | 0;
+    for (let d = 0; d < 8; d++) { const ii = i + D[d][0], jj = j + D[d][1]; if (ii < 0 || jj < 0 || ii >= N || jj >= N) continue; const q = jj * N + ii; if (!ok[q]) continue;
+      const nv = v + cost[d] * (0.7 + 0.6 * MAPGEN.h3(ii, jj, 5, seed)); if (nv < A[q] && nv < 150) { A[q] = nv; push(q, nv); } } }
+  const order = []; for (let q = 0; q < N * N; q++) if (A[q] < Infinity) order.push(q); order.sort((a, b) => A[a] - A[b]);
+  st.wheatFires.push({ ox, oy, N, C, A, order, t0, i0: 0, i1: 0, snd: 0 }); }
+function wheatFx(rt, dt) { if (!st.wheatFires.length || st.offset === null) return; const V = st.view, T = st.T, F = T.flat, FN = T.flatN, h = st.M.half;
+  for (let w = st.wheatFires.length - 1; w >= 0; w--) { const f = st.wheatFires[w], t = rt - f.t0, A = f.A, O = f.order, N = f.N, C = f.C;
+    while (f.i1 < O.length && A[O[f.i1]] <= t) f.i1++;
+    // queimou: palha deitada e chão preto
+    while (f.i0 < f.i1 && A[O[f.i0]] + WHEAT_BURN <= t) { const q = O[f.i0++], x = f.ox + (q % N + .5) * C, y = f.oy + (((q / N) | 0) + .5) * C;
+      for (const [a, b] of [[-0.125, -0.125], [0.125, -0.125], [-0.125, 0.125], [0.125, 0.125]]) { const fi = ((x + a + h) * 4) | 0, fj = ((y + b + h) * 4) | 0; if (fi >= 0 && fj >= 0 && fi < FN && fj < FN) F[fj * FN + fi] = 2;
+        RENDER.paint(T, x + a, y + b, [38 + Math.random() * 14, 32 + Math.random() * 10, 26 + Math.random() * 8], 0.7 + Math.random() * 0.25); } }
+    if (f.i0 >= O.length) { st.wheatFires.splice(w, 1); continue; }
+    const n = f.i1 - f.i0; if (!n) continue; let k = Math.min(160, n * 0.6) * dt * 6;
+    while (k > 0) { if (k < 1 && Math.random() > k) break; k--; const q = O[f.i0 + ((Math.random() * n) | 0)], x = f.ox + (q % N + Math.random()) * C, y = f.oy + (((q / N) | 0) + Math.random()) * C;
+      V.particles.push({ k: 1, x, y, z: 0.1 + Math.random() * 0.4, vx: SMOKE_WIND[0] * 0.8 + (Math.random() - .5) * 0.4, vy: SMOKE_WIND[1] * 0.8 + (Math.random() - .5) * 0.4, vz: 1.2 + Math.random() * 2.2, life: 0.4 + Math.random() * 0.8, max: 1.2, drag: 1.1 });
+      if (Math.random() < 0.18) { const c = 70 + Math.random() * 40; V.particles.push({ k: 2, x, y, z: 0.5, vx: (Math.random() - .5) * 0.4, vy: (Math.random() - .5) * 0.4, vz: 1 + Math.random(), life: 4 + Math.random() * 4, max: 8, r0: 0.3, r1: 2.2, col: [c, c * 0.93, c * 0.85] }); }
+      if (Math.random() < 0.08) V.particles.push({ k: 9, x, y, z: 0.3, vx: (Math.random() - .5) * 1.2, vy: (Math.random() - .5) * 1.2, vz: 1 + Math.random() * 2, life: 1 + Math.random() * 2, max: 3 }); }
+    f.snd -= dt; if (f.snd <= 0) { f.snd = 0.5 + Math.random() * 0.6; const q = O[f.i0 + ((Math.random() * n) | 0)], d = distTo([f.ox + (q % N) * C, f.oy + ((q / N) | 0) * C]); if (d < 70) AUDIO.brush(d * 1.6, false); } } }
 function drawAntennas(list) { const V = st.view, P = [0, 0, 0], Q = [0, 0, 0];
   for (const ct of list) { const tk = ct.tk, an = tk.TK.antenna; if ((ct.f & 1) && an.on === 'h') continue; if (tk.turretOff && an.on === 't') continue; const T = an.on === 'h' ? tk.TH : tk.TT;
     V.proj(...toW(T, an.a, [0, 0, 0]), P); V.proj(...toW(T, an.b, [0, 0, 0]), Q); V.line(P[0], P[1], Q[0], Q[1], 28, 30, 32, 0.9, false); } }
@@ -465,6 +515,12 @@ function overlay(dt, drawn) {
   const d = Math.round(Math.hypot(st.aim[0] - me.x, st.aim[1] - me.y)); c.font = '500 11px "JetBrains Mono", monospace'; c.fillStyle = '#dfe1d6'; c.textAlign = 'left'; c.fillText(d + ' m', x + 20, y - 10);
 }
 
+// caveirinhas: sobem 1,8 m a partir do lugar do tripulante e somem aos poucos (seguem o tanque se ele andar)
+function drawSkulls(dt) { if (!st.skulls.length) return; const V = st.view, c = V.ctx, PX = V.PX, P = [0, 0, 0], sc = Math.max(2, Math.min(4, Math.round(st.zoom / 14)));
+  for (let i = st.skulls.length - 1; i >= 0; i--) { const s = st.skulls[i]; s.t += dt; const u = s.t - s.dl; if (u > 2.8) { st.skulls.splice(i, 1); continue; } if (u < 0) continue;
+    const tk = s.ct.tk, g = s.o.g === 'h' ? tk.GH : tk.GT, w = toW(tk.tf(g), s.o.c, [0, 0, 0]), rise = 0.3 + 1.8 * (1 - Math.pow(1 - Math.min(1, u / 2.4), 2));
+    V.proj(w[0], w[1], w[2] + rise, P); c.globalAlpha = Math.min(1, u / 0.25, (2.8 - u) / 0.8); HITCAM.skull(c, Math.round(P[0] * PX - 3.5 * sc), Math.round(P[1] * PX - 3.5 * sc), sc, '#f4f1e8'); c.globalAlpha = 1; } }
+
 // ================================================================ HUD
 const SEATN = SIM.SEAT_NAMES;
 function hud() {
@@ -489,7 +545,7 @@ function hud() {
   const MG = TK.game.mg, SM = TK.game.smoke; $('#mgbar').innerHTML = (MG && me.mg ? me.mg.map(([belt, ammo, rl, ok], i) => '<div class="' + (ok ? '' : 'dead') + '"><span>' + (i ? 'Casco (auto)' : '<kbd>Esp</kbd> Coaxial') + '</span><span>' + (belt || !ammo ? belt + '/' + (belt + ammo) : 'trocando fita') + '</span><i style="width:' + (belt ? Math.round(belt / MG.belt * 100) : Math.round(rl * 100)) + '%"></i></div>').join('') : '') + (SM && me.smk ? '<div class="' + (me.smk[0] ? '' : 'dead') + '"><span><kbd>G</kbd> ' + (SM.kind === 'mortar' ? 'Fumaça' : 'Descarga') + '</span><span>' + (me.smk[2] > 0 ? 'soltando' : me.smk[1] > 0 ? 'carregando' : me.smk[0]) + '</span></div>' : '');
   const rl = $('#reload'); rl.firstElementChild.style.width = (me.loaded !== null ? 100 : Math.round(st.reloadLocal * 100)) + '%';
   rl.lastElementChild.textContent = me.loaded !== null ? 'Carregado: ' + TK.game.ammo[me.loaded].k + ' (' + TK.game.ammo[me.loaded].t + ')' : me.ammo.some(v => v) ? 'Recarregando ' + TK.game.ammo[me.ammo[me.sel] ? me.sel : me.ammo.findIndex(v => v)].t + '…' : 'Sem munição';
-  $('#speed').textContent = Math.round(Math.abs(me.v) * 3.6) + ' km/h' + (me.v < -0.2 ? ' ré' : '');
+  $('#speed').textContent = Math.round(Math.abs(me.v) * 3.6) + ' km/h' + (me.v < -0.2 ? ' ré' : '') + (me.hide && !me.dead ? ' · camuflado: visto a ' + me.hide + ' m' : '');
   const rep = $('#repair'); if (me.rep) { rep.hidden = false; rep.lastElementChild.textContent = me.rep[0] === 'fire' ? 'Apagando o fogo' : 'Consertando (fique parado)'; rep.firstElementChild.firstElementChild.style.width = Math.round(me.rep[1] * 100) + '%'; }
   else { rep.hidden = me.dead || !(me.fires || ct.f & 64); if (!rep.hidden) { rep.lastElementChild.textContent = me.fires ? 'INCÊNDIO! Aperte R para apagar' : 'Esteira quebrada: pare e aperte R'; rep.firstElementChild.firstElementChild.style.width = '0'; } }
   const dead = $('#deadBox'); if (me.dead) { dead.hidden = false; dead.textContent = me.respawn > 0 ? 'Volta em ' + me.respawn + ' s' : me.respawn === 0 ? 'Voltando…' : 'Seu tanque foi destruído. Espaço troca a câmera para um aliado.'; } else dead.hidden = true;
