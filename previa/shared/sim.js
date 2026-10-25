@@ -103,7 +103,11 @@ TANKS.pz4 = { key: 'pz4', name: 'Pz.Kpfw. IV Ausf. F2', short: 'Panzer IV F2', s
     cap: 87, racks: ['ammoL', 'ammoR', 'ammoFL', 'ammoFR'],
     seats: { driver: 'driver', radio: 'radio_op', gunner: 'gunner', loader: 'loader', commander: 'commander' },
     driveL: ['trackL', 'fdL', 'wheelsL'], driveR: ['trackR', 'fdR', 'wheelsR'], driveBoth: ['trans', 'shaft'],
-    traverseMod: 'ring', gunMods: ['breech', 'barrel'], sightMod: 'sight'
+    traverseMod: 'ring', gunMods: ['breech', 'barrel'], sightMod: 'sight',
+    // metralhadoras: cadência (tiros/s), velocidade, fita, munição total, troca de fita (s), arco da do casco (graus)
+    mg: { name: 'MG 34', rate: 14, v: 755, belt: 150, coax: 1650, bow: 1500, reload: 7, arc: 15 },
+    // fumaça: óleo jogado na descarga quente faz uma cortina atrás do tanque (n vezes, dur segundos cada)
+    smoke: { kind: 'exhaust', name: 'Fumaça na descarga', n: 3, dur: 14 }
   },
   ficha: `
       <h3>Blindagem real</h3>
@@ -218,7 +222,10 @@ TANKS.m4a1 = { key: 'm4a1', name: 'M4A1 Sherman', short: 'M4A1 Sherman', sub: 'M
     cap: 90, racks: ['ammoT', 'ammoL', 'ammoR', 'ammoFL', 'ammoFR'],
     seats: { driver: 'driver', radio: 'codriver', gunner: 'gunner', loader: 'loader', commander: 'commander' },
     driveL: ['trackL', 'wheelsL'], driveR: ['trackR', 'wheelsR'], driveBoth: ['trans', 'diff', 'shaft'],
-    traverseMod: 'ring', gunMods: ['breech', 'barrel'], sightMod: 'sight'
+    traverseMod: 'ring', gunMods: ['breech', 'barrel'], sightMod: 'sight',
+    mg: { name: 'M1919A4', rate: 8, v: 850, belt: 250, coax: 2500, bow: 2250, reload: 8, arc: 12 },
+    // morteiro M3 de 2 polegadas no teto da torre: granada de fumaça na direção do canhão, de 35 a 150 m
+    smoke: { kind: 'mortar', name: 'Morteiro de fumaça', n: 12, reload: 6, range: [35, 150] }
   },
   ficha: `
       <h3>Blindagem real</h3>
@@ -372,6 +379,13 @@ function getTemplate(key) {
     } }
   const F = TK.fenders; if (F) for (let idx = 0; idx < GH.n; idx++) { if (GH.mat[idx]) continue; gCenter(GH, idx, p); const ay = Math.abs(p[1]);
     if (ay > F.y[0] && ay < F.y[1] && Math.abs(p[2] - F.z) < 0.05 && p[0] > F.x[0] && p[0] < F.x[1]) { GH.mat[idx] = 3; GH.plate[idx] = 0; GH.thick[idx] = GH.t0[idx] = 3; setCol(GH, idx, TK.color, 6); GH.pnz[idx] = 1; } }
+  // posição de cada elo ao longo do contorno da esteira (para animar): anti-horário visto da esquerda, embaixo anda para +x
+  { const segs = []; let acc = 0; for (let i = 0; i < poly.length; i++) { const A = poly[i], B = poly[(i + 1) % poly.length], L = Math.hypot(B[0] - A[0], B[1] - A[1]); segs.push([A, B, L, acc]); acc += L; }
+    GH.tu = new Float32Array(GH.n); GH.tuLen = acc;
+    for (const k of ['trackL', 'trackR']) for (const idx of modBy(k).vox) { gCenter(GH, idx, p); let bd = 1e9, bu = 0;
+      for (const [A, B, L, u0] of segs) { const t = Math.max(0, Math.min(1, ((p[0] - A[0]) * (B[0] - A[0]) + (p[2] - A[1]) * (B[1] - A[1])) / (L * L || 1))), dx = A[0] + (B[0] - A[0]) * t - p[0], dz = A[1] + (B[1] - A[1]) * t - p[2], d = dx * dx + dz * dz;
+        if (d < bd) { bd = d; bu = u0 + L * t; } }
+      GH.tu[idx] = bu; } }
   for (const g of [GH, GT]) { const L = []; for (let i = 0; i < g.n; i++) if (g.mat[i]) L.push(i); g.list = Int32Array.from(L);
     g.cx = new Float32Array(L.length); g.cy = new Float32Array(L.length); g.cz = new Float32Array(L.length);
     for (let a = 0; a < L.length; a++) { gCenter(g, L[a], p); g.cx[a] = p[0]; g.cy[a] = p[1]; g.cz[a] = p[2]; }
@@ -637,6 +651,11 @@ class Tank {
     for (const o of this.MOD) if (o && o.kind !== 'crew' && o.kind !== 'ammo' && o.kind !== 'fuel' && (o.dead || o.hp < o.max * 0.5)) { o.dead = false; o.hp = Math.max(o.hp, o.max * 0.6); }
     this.label(toW(this.TH, [0, 0, 1.8], [0, 0, 0]), 'CONSERTADO', '#79c27c'); }
   // ---- estado para o placar e para o HUD
+  // anima os elos: dL/dR = quanto cada esteira andou (m). Só recolore quando o desenho muda de lugar.
+  animTracks(dL, dR) { const g = this.GH, tu = g.tu; if (!tu) return; const col = this.TK.track.col, P = 0.14;
+    this.trOff = this.trOff || [0, 0]; const o = this.trOff; o[0] += dL; o[1] += dR;
+    for (let s = 0; s < 2; s++) { const m = this.mk[s ? 'trackR' : 'trackL'], ph = Math.floor(o[s] / P * 4); if (m.ph === ph) continue; m.ph = ph;
+      for (const idx of m.vox) if (g.mat[idx] === 2) setCol(g, idx, col[Math.floor((tu[idx] + o[s]) / P) & 1], 10); } }
   driveState() { const g = this.game, mk = this.mk;
     const L = g.driveL.some(k => mk[k] && mk[k].dead), R = g.driveR.some(k => mk[k] && mk[k].dead);
     const both = g.driveBoth.some(k => mk[k] && mk[k].dead) || mk.engine.dead || !this.hasSeat('driver');
