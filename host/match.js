@@ -6,6 +6,8 @@ const TICK = 1 / 30, D2R = Math.PI / 180, G = 9.81;
 const r2 = v => Math.round(v * 100) / 100, r3 = v => Math.round(v * 1000) / 1000;
 const wrap = a => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
 const approach = (v, t, d) => v < t ? Math.min(t, v + d) : Math.max(t, v - d);
+const SMOKE_WIND = [0.5, 0.25];
+const MG_A = { t: 'AP', k: 'bala', cal: 7.92, fill: 0, def: 5, pen: [9] };
 const gauss = () => { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
 const MODES = { dm: 'Mata-mata', dom: 'Dominação', tdm: 'Mata-mata infinito' };
 
@@ -15,7 +17,7 @@ class Match {
     this.map = MAP.generate(room.seed, room.map, true);
     this.mode = room.mode; this.limit = room.time * 60; this.killGoal = room.kills;
     this.t = 0; this.tick = 0; this.ev = []; this.ents = []; this.shells = []; this.nextEnt = 1; this.nextShell = 1;
-    this.score = [0, 0]; this.zone = { prog: 0, owner: -1 }; this.over = false; this.craters = []; this.fires = []; this.settleQ = new Set();
+    this.score = [0, 0]; this.zone = { prog: 0, owner: -1 }; this.over = false; this.craters = []; this.fires = []; this.settleQ = new Set(); this.smokes = []; this.lobs = []; this.nextSmoke = 1;
     const perTeam = [0, 0];
     this.slots = room.tanks.map(rt => ({ id: rt.id, team: rt.team, type: rt.type, bot: rt.bot, driver: rt.driver, gunner: rt.gunner,
       ammo: rt.ammo.slice(), spawnI: perTeam[rt.team]++ % 4, ent: null, respawnAt: -1,
@@ -30,7 +32,9 @@ class Match {
     if (role !== 'driver') {
       if (Array.isArray(m.aim) && m.aim.length === 3 && m.aim.every(Number.isFinite)) I.aim = m.aim;
       if (Number.isInteger(m.fire) && m.fire !== I.fireN) { if (I.fireN !== undefined) I.fire = true; I.fireN = m.fire; }
-      if (Number.isInteger(m.sel) && m.sel >= 0 && m.sel < e.tank.game.ammo.length) I.sel = m.sel; }
+      if (Number.isInteger(m.sel) && m.sel >= 0 && m.sel < e.tank.game.ammo.length) I.sel = m.sel;
+      I.mg = m.mg === 1; }
+    if (role !== 'driver' && Number.isInteger(m.smk) && m.smk !== I.smkN) { if (I.smkN !== undefined) I.smoke = true; I.smkN = m.smk; }
     if (Number.isInteger(m.rep) && m.rep !== I.repN) { if (I.repN !== undefined) I.repair = true; I.repN = m.rep; }
   }
   // quem está sozinho no tanque (o outro posto vazio) controla tudo
@@ -47,6 +51,8 @@ class Match {
     const e = { id, slot: s, team: s.team, tank: tk, v: 0, loaded: null, reload: 0, sel: 0, ammo: s.ammo.slice(), reveal: 0, visTo: [false, false],
       inp: { thr: 0, steer: 0, aim: null, fire: false, sel: 0, repair: false }, deadKey: '', bot: null, spawnT: this.t };
     e.inp.aim = [tk.x + Math.cos(tk.h) * 50, tk.y + Math.sin(tk.h) * 50, 1];
+    const SM = tk.game.smoke; e.smk = SM ? { n: SM.n, rl: 0, on: 0, next: 0 } : null;
+    const M = tk.game.mg; e.mg = M ? ['coax', 'bow'].map(k => { const n = Math.min(M.belt, M[k]); return { k, mod: k === 'coax' ? 'coax' : 'bowmg', belt: n, ammo: M[k] - n, rl: 0, acc: 0 }; }) : [];
     // munição nos racks: enche do último a ser usado para o primeiro
     let n = e.ammo.reduce((a, b) => a + b, 0);
     for (let i = tk.game.racks.length - 1; i >= 0; i--) { const r = tk.mk[tk.game.racks[i]]; r.count = Math.min(r.cap, n); n -= r.count; }
@@ -64,7 +70,7 @@ class Match {
       const tk = e.tank;
       if (!tk.destroyed) {
         if (e.slot.bot && e.slot.ent === e) think(this, e, dt);
-        this.drive(e, dt); this.turret(e, dt); this.gun(e, dt);
+        this.drive(e, dt); this.turret(e, dt); this.gun(e, dt); this.mgs(e, dt); this.smoke(e, dt);
         if (e.inp.repair) { e.inp.repair = false; tk.startRepair(); }
         tk.updateCrew(dt); tk.updRepair(dt, Math.abs(e.v) > 0.3 || e.inp.thr !== 0);
         if (e.reveal > 0) e.reveal -= dt;
@@ -73,6 +79,7 @@ class Match {
       const dk = tk.deadMods().join(','); if (dk !== e.deadKey) { e.deadKey = dk; this.ev.push(['md', e.id, tk.deadMods()]); }
     }
     for (const s of this.shells) this.stepShell(s, dt);
+    this.stepSmoke(dt);
     this.stepFires(dt);
     if (this.tick % 6 === 0) this.settleAll();
     this.shells = this.shells.filter(s => s.alive);
@@ -86,7 +93,7 @@ class Match {
     let thr = I.thr, st = I.steer; if (ds.both || tk.repair && tk.repair.kind === 'fix') { thr = 0; st = 0; }
     const eng = tk.mk.engine; let pw = eng.hp < eng.max * 0.5 ? 0.55 : 1;
     if ((tk.mk.radiator && tk.mk.radiator.dead) || (tk.mk.clutch && tk.mk.clutch.dead) || (tk.mk.fans && tk.mk.fans.dead)) pw *= 0.75;
-    pw *= this.slowAt(tk.x, tk.y, tk.h, g); if (e.rub) pw *= 0.55;
+    pw *= this.slowAt(tk.x, tk.y, tk.h, g); if (e.rub) pw *= 0.8;
     let nx = tk.x, ny = tk.y, nh = tk.h;
     if (ds.L || ds.R) {
       e.v = approach(e.v, 0, 5 * dt);
@@ -105,9 +112,11 @@ class Match {
       nh = tk.h + st * rate * dt; nx = tk.x + Math.cos(nh) * e.v * dt; ny = tk.y + Math.sin(nh) * e.v * dt;
     }
     if (nx === tk.x && ny === tk.y && nh === tk.h) return;
-    // dentro de casa: parede de alvenaria só cede bem devagar, madeira e móveis um pouco mais rápido
-    { const pr = this.pressing(e, nx, ny, nh); if (pr) { const cap = pr[0] > 6 ? 0.35 : pr[1] > 6 ? 1.1 : 1e9, sp = Math.abs(e.v);
-      if (sp > cap) { const k = cap / sp; nx = tk.x + (nx - tk.x) * k; ny = tk.y + (ny - tk.y) * k; nh = tk.h + wrap(nh - tk.h) * Math.max(k, 0.3); e.v *= k; } } }
+    // parede: cada voxel quebrado gasta energia do movimento (alvenaria ~80 J, madeira, barro e móveis ~35 J). Um tanque de 25 t a 15 km/h
+    // atravessa uma parede de pedra perdendo metade da velocidade; parado, o motor ainda empurra devagar (0,7 m/s).
+    { const pr = this.pressing(e, nx, ny, nh); if (pr) { const m = g.weight * 1000, sp = Math.abs(e.v), E = pr[0] * 80 + pr[1] * 35;
+      const ke = Math.max(0, 0.5 * m * sp * sp - E), sp2 = Math.max(Math.sqrt(2 * ke / m), Math.min(sp, 0.7));
+      if (sp2 < sp) { const k = sp2 / sp; nx = tk.x + (nx - tk.x) * k; ny = tk.y + (ny - tk.y) * k; nh = tk.h + wrap(nh - tk.h) * Math.max(k, 0.5); e.v *= k; } } }
     if (this.blocked(e, nx, ny, nh)) {
       if (!this.blocked(e, tk.x, tk.y, nh)) { nx = tk.x; ny = tk.y; } else { nx = tk.x; ny = tk.y; nh = tk.h; }
       e.v *= -0.2;
@@ -165,6 +174,103 @@ class Match {
     }
     if (I.fire) { I.fire = false; if (e.loaded !== null && gunOk && tk.hasSeat('gunner')) this.fire(e); }
   }
+  // ---------------------------------------------------------------- fumaça
+  // Sherman: o municiador dispara o morteiro de 2" na direção do canhão. Panzer: óleo na descarga solta fumaça atrás por alguns segundos.
+  smoke(e, dt) {
+    const tk = e.tank, SM = tk.game.smoke, S = e.smk; if (!SM || !S) return; const I = e.inp;
+    if (S.rl > 0) S.rl -= dt;
+    if (I.smoke) { I.smoke = false;
+      if (SM.kind === 'mortar' && S.n > 0 && S.rl <= 0 && tk.hasSeat('loader') && !tk.turretOff) { S.n--; S.rl = SM.reload;
+        const yaw = tk.h + tk.ty, a = I.aim, want = a ? Math.hypot(a[0] - tk.x, a[1] - tk.y) : 100, d = Math.max(SM.range[0], Math.min(SM.range[1], want));
+        const p0 = SIM.toW(tk.TT, [-0.3, 0.4, 2.7], [0, 0, 0]), x1 = r2(tk.x + Math.cos(yaw) * d), y1 = r2(tk.y + Math.sin(yaw) * d), T = r2(0.9 + d / 120);
+        this.lobs.push({ x: x1, y: y1, t: T }); this.ev.push(['smf', e.id, r2(p0[0]), r2(p0[1]), r2(p0[2]), x1, y1, T]); e.reveal = Math.max(e.reveal, 1); }
+      if (SM.kind === 'exhaust' && S.n > 0 && S.on <= 0 && tk.mk.engine && !tk.mk.engine.dead) { S.n--; S.on = SM.dur; S.next = 0; } }
+    if (S.on > 0) { S.on -= dt; S.next -= dt;
+      if (S.next <= 0 && !tk.mk.engine.dead) { S.next = 0.45; const v = tk.TK.vents.eng, c = v[(Math.random() * v.length) | 0], w = SIM.toW(tk.TH, [c[0] - 0.6, c[1], 0.8], [0, 0, 0]);
+        this.addSmoke(w[0], w[1], 2.6 + Math.random(), 32, 1.2); } }
+  }
+  addSmoke(x, y, R, life, grow) { const s = { id: this.nextSmoke++, x: r2(x), y: r2(y), R: r2(R), t: 0, life, grow, r: 0.5 }; this.smokes.push(s); this.ev.push(['sm', s.id, s.x, s.y, s.R, life, grow]); }
+  stepSmoke(dt) {
+    for (const L of this.lobs) { L.t -= dt; if (L.t <= 0) { this.addSmoke(L.x, L.y, 7, 50, 2.5); this.ev.push(['du', L.x, L.y, 0.1, 14]); } }
+    this.lobs = this.lobs.filter(L => L.t > 0);
+    for (const s of this.smokes) { s.t += dt; s.x += SMOKE_WIND[0] * dt; s.y += SMOKE_WIND[1] * dt; s.r = s.R * Math.min(1, 0.25 + s.t / s.grow); }
+    this.smokes = this.smokes.filter(s => s.t < s.life); }
+  // a fumaça corta a linha de visão quando o segmento passa pelo miolo da nuvem (e ela ainda está densa)
+  smokeBlocks(ax, ay, bx, by) {
+    for (const s of this.smokes) { if (s.t > s.life - 8) continue; const ex = bx - ax, ey = by - ay, L2 = ex * ex + ey * ey || 1, t = Math.max(0, Math.min(1, ((s.x - ax) * ex + (s.y - ay) * ey) / L2));
+      if (Math.hypot(ax + ex * t - s.x, ay + ey * t - s.y) < s.r * 0.75) return true; }
+    return false; }
+  // ---------------------------------------------------------------- metralhadoras
+  // coaxial: segue a torre e atira enquanto o atirador segura a tecla. Do casco: mira sozinha em soldados (quando existirem),
+  // só com o metralhador (rádio-operador) vivo e dentro do arco da bola. A troca de fita para a arma, e é mais lenta sem quem carrega.
+  mgs(e, dt) {
+    const tk = e.tank, M = tk.game.mg; if (!M) return;
+    for (const w of e.mg) { const mod = tk.mk[w.mod]; if (!mod || mod.dead) { w.acc = 0; continue; }
+      const coax = w.k === 'coax', crew = coax ? tk.hasSeat('gunner') && !tk.turretOff : tk.hasSeat('radio');
+      if (w.belt <= 0) { w.acc = 0; if (w.ammo <= 0 || !crew) continue;
+        w.rl += dt / (M.reload * (coax ? (tk.hasSeat('loader') ? 1 : 1.8) : 1)); if (w.rl >= 1) { w.rl = 0; w.belt = Math.min(M.belt, w.ammo); w.ammo -= w.belt; } continue; }
+      const tgt = !crew ? null : coax ? (e.inp.mg ? e.inp.aim : null) : this.bowTarget(e, M);
+      if (!tgt) { w.acc = 0; continue; }
+      w.acc += M.rate * dt;
+      while (w.acc >= 1 && w.belt > 0) { w.acc -= 1; w.belt--; this.bullet(e, w, tgt, M); }
+      e.reveal = Math.max(e.reveal, 1.5); }
+  }
+  // alvo da metralhadora do casco: o soldado inimigo mais perto, visível e dentro do arco (ainda não há soldados no jogo)
+  bowTarget(e, M) {
+    const tk = e.tank, list = this.troops || []; let best = null, bd = 400;
+    for (const t of list) { if (t.dead || t.team === e.team) continue; const dx = t.x - tk.x, dy = t.y - tk.y, d = Math.hypot(dx, dy); if (d > bd) continue;
+      if (Math.abs(wrap(Math.atan2(dy, dx) - tk.h)) > M.arc * D2R) continue; if (MAP.los(this.map, [tk.x, tk.y, 1.5], [t.x, t.y, 1.2]) < 1) continue; best = [t.x, t.y, 1.0]; bd = d; }
+    return best; }
+  mgMuzzle(tk, w) { const b = tk.mk[w.mod].box, T = tk.mk[w.mod].g === 't' ? tk.TT : tk.TH; return SIM.toW(T, [b[0][1] + 0.05, (b[1][0] + b[1][1]) / 2, (b[2][0] + b[2][1]) / 2], [0, 0, 0]); }
+  bullet(e, w, a, M) {
+    const tk = e.tank, g = tk.game, mz = this.mgMuzzle(tk, w);
+    let yaw = w.k === 'coax' ? tk.h + tk.ty : Math.atan2(a[1] - mz[1], a[0] - mz[0]);
+    if (w.k !== 'coax') yaw = tk.h + Math.max(-M.arc * D2R, Math.min(M.arc * D2R, wrap(yaw - tk.h)));
+    const dx = a[0] - mz[0], dy = a[1] - mz[1], d = Math.max(5, Math.min(1000, dx * Math.cos(yaw) + dy * Math.sin(yaw)));
+    let el = SIM.elevFor(M.v, d, (a[2] || 0) - mz[2]); el = Math.max(g.elev[0] * D2R, Math.min(g.elev[1] * D2R, el));
+    const disp = 0.0035 + 0.012 * Math.min(1, Math.abs(e.v) / g.vmax); el += gauss() * disp; yaw += gauss() * disp;
+    const vel = [Math.cos(el) * Math.cos(yaw) * M.v, Math.cos(el) * Math.sin(yaw) * M.v, Math.sin(el) * M.v];
+    // voo em trechos de 20 m com queda; o tiro some depois de 1100 m
+    let p0 = mz, dist = 0, end = null, hit = 0;
+    while (!end && dist < 1100) { const h = 20 / M.v, p1 = [p0[0] + vel[0] * h, p0[1] + vel[1] * h, p0[2] + vel[2] * h]; vel[2] -= G * h;
+      const r = this.bulletSeg(e, p0, p1, dist, M); if (r) { end = r[0]; hit = r[1]; break; } p0 = p1; dist += 20;
+      if (Math.abs(p1[0]) > MAP.HALF + 60 || Math.abs(p1[1]) > MAP.HALF + 60) break; }
+    if (!end) end = p0;
+    this.ev.push(['mg', e.id, w.k === 'coax' ? 0 : 1, r2(mz[0]), r2(mz[1]), r2(mz[2]), r2(end[0]), r2(end[1]), r2(Math.max(0, end[2])), hit]);
+  }
+  // um trecho do voo: chão, tanque (não fura blindagem) ou objeto do mapa. Devolve [ponto, tipo] ou null.
+  // tipo: 0 chão/nada, 1 madeira/palha, 2 pedra/metal, 3 tanque
+  bulletSeg(e, p0, p1, dist, M) {
+    const d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]], L = Math.hypot(d[0], d[1], d[2]), dn = [d[0] / L, d[1] / L, d[2] / L], C = [];
+    if (p1[2] < 0) C.push({ t: L * p0[2] / (p0[2] - p1[2]), k: 'g' });
+    for (const o of this.ents) { if (o === e) continue; const tk = o.tank, ox = p0[0] - tk.x, oy = p0[1] - tk.y, oz = p0[2] - 1.3;
+      const b = ox * dn[0] + oy * dn[1] + oz * dn[2], c = ox * ox + oy * oy + oz * oz - 17.6, disc = b * b - c; if (disc < 0) continue;
+      const t0 = -b - Math.sqrt(disc); if (t0 > L || -b + Math.sqrt(disc) < 0) continue; C.push({ t: Math.max(0, t0), k: 't', o }); }
+    for (const id of MAP.propsAlong(this.map, p0[0], p0[1], p1[0], p1[1])) { const pr = this.map.props[id]; if (pr.gone) continue;
+      const h = MAP.rayBox(p0, dn, pr.bb, pr.bb[4]); if (!h || h[0] > L) continue; C.push({ t: h[0], k: 'p', pr, t1: Math.min(h[1], L) }); }
+    C.sort((a, b) => a.t - b.t);
+    const P = { pen: 9 * Math.exp(-dist / 700) };
+    for (const c of C) { const at = [p0[0] + dn[0] * c.t, p0[1] + dn[1] * c.t, p0[2] + dn[2] * c.t];
+      if (c.k === 'g') return [at, 0];
+      if (c.k === 't') { const rep = c.o.tank.castShot([at[0] - dn[0] * 0.3, at[1] - dn[1] * 0.3, at[2] - dn[2] * 0.3], dn, MG_A, P.pen, true, 9);
+        if (rep.res !== 'miss') return [rep.end || at, 3]; if (rep.ground) return [rep.end || at, 0]; continue; }
+      const r = this.bulletProp(c.pr, p0, dn, c.t, c.t1, P); if (r) return r; }
+    return null; }
+  // atravessa um objeto: vidro quebra, madeira e palha se lascam até a bala perder força, pedra só lasca na superfície
+  bulletProp(pr, p0, dn, t0, t1, P) {
+    let pen = P.pen; const p = [0, 0, 0], q = [0, 0, 0], PT = [], R = MAP.RES, T = MAP.MAT; let last = -1, out = null;
+    for (let t = t0; t <= t1 + 0.05; t += 0.04) {
+      p[0] = p0[0] + dn[0] * t; p[1] = p0[1] + dn[1] * t; p[2] = p0[2] + dn[2] * t; if (p[2] < 0) break;
+      const idx = MAP.propAt(pr, p[0], p[1], p[2]); if (idx < 0 || idx === last) continue; last = idx; const m = pr.mat[idx]; if (!m) continue;
+      const cut = () => { MAP.propCenter(pr, idx, q); PT.push(r2(q[0]), r2(q[1]), r2(q[2])); };
+      if (m === T.GLASS) { this.breakGlass(pr, MAP.winAt(pr, p[0], p[1], p[2], 0.7)); pen -= 0.3; continue; }
+      if (m === T.LEAF || m === T.HAY) { if (Math.random() < 0.2) cut(); pen -= R[m]; if (pen <= 0) { out = [p.slice(), 1]; break; } continue; }
+      if (m === T.WOOD || m === T.FLOOR || m === T.THATCH || m === T.CLOTH || m === T.TILE || m === T.RUBBER || (m === T.TRUNK && pr.fallen)) {
+        cut(); pen -= R[m]; if (pen <= 0) { out = [p.slice(), 1]; break; } continue; }
+      // pedra, tijolo, barro, metal, tora, tronco de pé: para na hora e às vezes arranca um voxel
+      if (Math.random() < (m === T.TRUNK || m === T.LOG ? 0.12 : 0.18)) cut(); out = [p.slice(), m === T.TRUNK || m === T.LOG ? 1 : 2]; break; }
+    if (PT.length) { const rem = MAP.tunnel(pr, 0.04, PT); if (rem.length) { this.ev.push(['pt', pr.id, 0.04, PT, 1]); this.checkCollapse(pr); } }
+    P.pen = pen; return out; }
   // ---------------------------------------------------------------- tiro
   fire(e) {
     const tk = e.tank, g = tk.game, A = SIM.ammoObj(tk.TK, e.loaded), B = tk.TK.barrel;
@@ -299,7 +405,9 @@ class Match {
       const obs = this.ents.filter(o => o.team === team && !o.tank.destroyed);
       for (const e of this.ents) { if (e.team === team || e.tank.destroyed) continue; const tk = e.tank; let vis = false;
         for (const o of obs) { const ot = o.tank, d = Math.hypot(ot.x - tk.x, ot.y - tk.y);
-          if (d < 35 || (e.reveal > 0 && d < 800)) { vis = true; break; }
+          if (d < 12 || (e.reveal > 0 && d < 800)) { vis = true; break; }
+          if (this.smokeBlocks(ot.x, ot.y, tk.x, tk.y)) continue;
+          if (d < 35) { vis = true; break; }
           const view = ot.game.view * (ot.hasSeat('commander') ? 1 : 0.65); if (d > view) continue;
           const eye = [ot.x, ot.y, 2.7];
           if (MAP.los(this.map, eye, [tk.x, tk.y, 2.2]) < 1 || MAP.los(this.map, eye, [tk.x, tk.y, 1.0]) < 1) { vis = true; break; } }
@@ -354,11 +462,13 @@ class Match {
     const tk = e.tank, g = tk.game, s = e.slot, mk = tk.mk;
     const crew = []; for (const seat of ['commander', 'gunner', 'loader', 'driver', 'radio']) { const k = tk.seat[seat]; crew.push([seat, k ? mk[k].name : '', k && !mk[k].dead ? 1 : 0]); }
     const orig = Object.entries(g.seats).map(([seat, k]) => [seat, mk[k].name, mk[k].dead ? 0 : 1]);
-    const show = ['engine', 'trans', g.driveBoth.includes('diff') ? 'diff' : 'fdL', 'trackL', 'trackR', 'wheelsL', 'wheelsR', 'breech', 'barrel', 'ring', 'sight', 'radio'].filter(k => mk[k]);
+    const show = ['engine', 'trans', g.driveBoth.includes('diff') ? 'diff' : 'fdL', 'trackL', 'trackR', 'wheelsL', 'wheelsR', 'breech', 'barrel', 'ring', 'sight', 'radio', 'coax', 'bowmg'].filter(k => mk[k]);
     if (g.driveL.includes('fdL')) show.splice(3, 0, 'fdR');
     return { id: e.id, role: this.role(s, pid),
       crew, orig, moving: tk.moving ? [tk.moving.to, Math.round(tk.moving.t / tk.moving.T * 100) / 100] : null,
       mods: show.map(k => [k, mk[k].name, Math.round(100 * mk[k].hp / mk[k].max), mk[k].dead ? 1 : 0]),
+      smk: e.smk ? [e.smk.n, r2(Math.max(0, e.smk.rl)), r2(Math.max(0, e.smk.on))] : null,
+      mg: e.mg.map(w => [w.belt, w.ammo, r2(w.rl), tk.mk[w.mod] && !tk.mk[w.mod].dead ? 1 : 0]),
       ammo: e.ammo, loaded: e.loaded, reload: r2(e.reload), reloadT: r2(e.reloadT || g.reload), sel: e.sel,
       rep: tk.repair ? [tk.repair.kind, r2(tk.repair.t / tk.repair.T)] : null, fires: tk.fires.length, v: r2(e.v),
       dead: tk.destroyed ? 1 : 0, respawn: s.respawnAt >= 0 ? Math.max(0, Math.ceil(s.respawnAt - this.t)) : -1,
