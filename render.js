@@ -84,7 +84,7 @@ class View {
       const bu = g.burn[idx]; if (bu > 0) { const f = 1 - bu * 0.8; r = r * f + 18 * bu; gg = gg * f + 14 * bu; b = b * f + 12 * bu; }
       r *= sh; gg *= sh; b *= sh;
       const ht = g.heat[idx]; if (ht > 0) { r += 255 * ht; gg += 120 * ht * ht; b += 30 * ht * ht * ht; }
-      const col = pack(r > 255 ? 255 : r, gg > 255 ? 255 : gg, b > 255 ? 255 : b), id = ((code << 20) | idx) + 1;
+      const col = pack(r > 255 ? 255 : r, gg > 255 ? 255 : gg, b > 255 ? 255 : b), id = ((code << 21) | idx) + 1;
       const x0 = (sx - hs) | 0, y0 = (sy - hv) | 0;
       for (let yy = y0; yy < y0 + sv; yy++) { if (yy < 0 || yy >= H) continue; const row = yy * W; for (let xx = x0; xx < x0 + s; xx++) { if (xx < 0 || xx >= W) continue; const p = row + xx;
         if (d < zb[p]) { zb[p] = d; u32[p] = col; idb[p] = id; occ[p] = 1; } } } } }
@@ -99,7 +99,7 @@ class View {
     // longe, cada voxel tem menos de um pixel: desenha um voxel de cada bloco 2x2x2, no dobro do tamanho
     const R = pr.R, lod = PVS * S < 0.7, VZ = lod ? PVS * 2 : PVS, s = Math.max(1, Math.ceil(VZ * S * 1.06)), hs = s / 2, sv = Math.max(1, Math.ceil(VZ * S * (SA + CA) * 1.02)), hv = sv / 2, ox = pr.x0 - cam.x - cam.ox, oy = pr.y0 - cam.y - cam.oy, zb = this.zb, u32 = this.u32, idb = this.idb, occ = this.occ;
     cut = cut && !lod && R.visCut; const zc = cut ? (pr.cutK - 1) * PVS : 1e9, hide = pr.hide;
-    const L = pr.list, lx = R.lx, ly = R.ly, lz = R.lz, shd = R.shd, vis = lod ? R.lod : cut ? R.visCut : R.vis, mat = pr.mat, cr = pr.cr, cg = pr.cg, cb = pr.cb, base = (code << 20) + 1;
+    const L = pr.list, lx = R.lx, ly = R.ly, lz = R.lz, shd = R.shd, vis = lod ? R.lod : cut ? R.visCut : R.vis, mat = pr.mat, cr = pr.cr, cg = pr.cg, cb = pr.cb, base = (code << 21) + 1;
     for (let q = 0; q < vis.length; q++) { const a = vis[q], idx = L[a]; if (!mat[idx] || (hide && hide[idx])) continue;
       const X = ox + lx[a], Y = oy + ly[a], z = lz[a]; const sx = W / 2 + X * S, sy = H / 2 - (Y * SA + z * CA) * S, d = Y * CA - z * SA;
       if (sx < -s || sy < -s || sx > W + s || sy > H + s) continue;

@@ -79,7 +79,7 @@ function handleEv(e) {
   const V = st.view, T = st.T, M = st.M;
   switch (e[0]) {
     case 'spawn': { const [, id, type, team, x, y, h, slot] = e; const tk = new SIM.Tank(type, id); tk.x = x; tk.y = y; tk.h = h; tk.update();
-      const ct = { id, type, team, slot, tk, ci: st.ciNext++ % 200, snaps: [{ t: 0, x, y, h, ty: 0, v: 0 }], vis: true, x, y, h, ty: 0, v: 0, f: 0, trail: [x, y], smoke: 0 };
+      const ct = { id, type, team, slot, tk, ci: st.ciNext++ % 64, snaps: [{ t: 0, x, y, h, ty: 0, v: 0 }], vis: true, x, y, h, ty: 0, v: 0, f: 0, trail: [x, y], smoke: 0 };
       st.byCi[ct.ci] = ct; st.tanks.set(id, ct); break; }
     case 'sp': V.sparks([e[1], e[2], e[3]], [e[4], e[5], e[6]], e[7], e[8]); break;
     case 'db': { const ct = tankOf(e[7]); if (!ct) break; const g = ct.tk.grid(e[8]), i = e[9]; V.debris([e[1], e[2], e[3]], [e[4], e[5], e[6]], [g.cr[i], g.cg[i], g.cb[i]], e[10]); break; }
@@ -245,7 +245,7 @@ function frame(nowMs) {
   for (const pr of st.dirty) { RENDER.refreshProp(pr); RENDER.reshadow(st.T, pr); pr.dirty = false; if (pr.fire) firePoints(pr); } st.dirty.length = 0;
   // de perto, as casas perto do centro da tela aparecem em corte (sem telhado nem andar de cima)
   const cutR = st.zoom > 20 * V.GBcss ? 26 : 0;
-  for (const pr of st.M.props) if (!pr.gone) { const fl = pr.falling; if (!fl) V.splatProp(pr, 512 + pr.id, cutR && pr.struct && Math.abs(pr.cx - cam.x) < cutR && Math.abs(pr.cy - cam.y) < cutR); }
+  for (const pr of st.M.props) if (!pr.gone) { const fl = pr.falling; if (!fl) V.splatProp(pr, 128 + pr.id, cutR && pr.struct && Math.abs(pr.cx - cam.x) < cutR && Math.abs(pr.cy - cam.y) < cutR); }
   for (let i = st.drops.length - 1; i >= 0; i--) { const f = st.drops[i]; f.t += dt; const u = Math.min(1, f.t / f.dur);
     if (u < 1) { V.splatDrop(f, f.drop * (1 - u * u)); continue; }
     st.drops.splice(i, 1); const pr = f.pr; if (pr.hide) { for (const idx of f.idx) pr.hide[idx] = 0; if (!st.drops.some(d => d.pr === pr)) pr.hide = null; }
@@ -310,9 +310,9 @@ function drawShells(dt) { const V = st.view, P = [0, 0, 0], Q = [0, 0, 0];
 // ================================================================ mira e análise
 function aimFromScreen(mx, my) { const V = st.view, x = (mx / V.PX) | 0, y = (my / V.PX) | 0; if (x < 0 || y < 0 || x >= V.W || y >= V.H) return null;
   const id = V.idb[y * V.W + x];
-  if (id > 0) { const v = id - 1, code = v >>> 20, idx = v & 0xFFFFF;
-    if (code < 512) { const ct = st.byCi[code >> 1]; if (ct) { const g = ct.tk.grid(code & 1); if (g.mat[idx]) return { p: toW(ct.tk.tf(g), gCenter(g, idx, [0, 0, 0]), [0, 0, 0]), ct }; } }
-    else { const pr = st.M.props[code - 512]; if (pr && pr.mat[idx]) return { p: MAPGEN.propCenter(pr, idx, [0, 0, 0]), pr }; } }
+  if (id > 0) { const v = id - 1, code = v >>> 21, idx = v & 0x1FFFFF;
+    if (code < 128) { const ct = st.byCi[code >> 1]; if (ct) { const g = ct.tk.grid(code & 1); if (g.mat[idx]) return { p: toW(ct.tk.tf(g), gCenter(g, idx, [0, 0, 0]), [0, 0, 0]), ct }; } }
+    else { const pr = st.M.props[code - 128]; if (pr && pr.mat[idx]) return { p: MAPGEN.propCenter(pr, idx, [0, 0, 0]), pr }; } }
   return { p: V.unproj(mx / V.PX, my / V.PX) }; }
 function shotFrom(me, p) { const tk = me.tk, i = st.me.loaded !== null ? st.me.loaded : st.sel, A = SIM.ammoObj(tk.TK, i), B = tk.TK.barrel;
   const mz = toW(tk.TT, [B.x1, 0, B.z], [0, 0, 0]); const dx = p[0] - mz[0], dy = p[1] - mz[1], d = Math.max(1, Math.hypot(dx, dy));

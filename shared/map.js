@@ -42,7 +42,7 @@ const THEMES = {
 // LITE: o servidor não precisa das cores, só do material (gasta um quarto da memória)
 let LITE = false;
 function newProp(kind, x0, y0, nx, ny, nz) { const n = nx * ny * nz;
-  if (n >= 1 << 20) throw new Error('objeto grande demais: ' + kind);
+  if (n >= 1 << 21) throw new Error('objeto grande demais: ' + kind);
   const C = () => LITE ? null : new Uint8Array(n);
   return { kind, x0, y0, z0: 0, nx, ny, nz, n, mat: new Uint8Array(n), cr: C(), cg: C(), cb: C() }; }
 function put(pr, i, j, k, m, c, jit, s) { const idx = (k * pr.ny + j) * pr.nx + i; pr.mat[idx] = m; if (!pr.cr) return;
@@ -115,8 +115,10 @@ function instance(t, x, y, extra) {
 // Montada em voxels inteiros num sistema local (u ao longo da cumeeira, v atravessando) e girada no fim se precisar.
 // pr.nav guarda cômodos, portas, janelas e escadas em coordenadas do mundo (para tropas, no futuro);
 // pr.win guarda os vidros de cada janela, para estilhaçar a janela inteira de uma vez.
-const r2 = v => Math.round(v * 100) / 100;
-function building(cx, cy, W, D, alongX, front, T, s, barn) {
+const r2 = v => Math.round(v * 100) / 100, r3 = v => Math.round(v * 1000) / 1000;
+// seno e cosseno das 32 direções, arredondados para todo navegador gerar a mesma casa
+const COS32 = [], SIN32 = []; for (let q = 0; q < 32; q++) { COS32.push(Math.round(Math.cos(q * Math.PI / 16) * 1e9) / 1e9); SIN32.push(Math.round(Math.sin(q * Math.PI / 16) * 1e9) / 1e9); }
+function building(cx, cy, W, D, q32, front, T, s, barn) {
   const r = mulberry32(s), thatch = T.roofKind === 'thatch';
   const nf = barn ? 1 : thatch ? (r() < 0.25 ? 2 : 1) : (r() < 0.6 ? 2 : 1), log = thatch && nf === 2 && !barn;
   const WT = thatch && !log ? 3 : 4, IT = 2, ST = barn ? 34 : 28, wallK = nf * ST;
@@ -345,22 +347,29 @@ function building(cx, cy, W, D, alongX, front, T, s, barn) {
     for (let u = st0; u <= st0 + 44; u += 16) for (let q = 0; q < 16; q++) { const j = fBack === 0 ? R.v0 + q : R.v1 - 1 - q; for (let k = R.b; k < R.b + 12; k++) set(u, j, k, WOOD, mix([120, 92, 62], (k % 3 ? 1 : 0.85)), 6); } }
   finish(pr);
   pr.block = false; pr.crush = false; pr.struct = true; pr.cutK = barn ? 23 : 19; pr.settleN = 0;
-  pr.foot = alongX ? [cx - W / 2 - 0.1, cy - D / 2 - 0.1, cx + W / 2 + 0.1, cy + D / 2 + 0.1] : [cx - D / 2 - 0.1, cy - W / 2 - 0.1, cx + D / 2 + 0.1, cy + W / 2 + 0.1];
+  // 32 direções: gira a grade montada (q = 0 é o cume ao longo de x)
+  const q = ((q32 % 32) + 32) % 32, ca = COS32[q], sa = SIN32[q];
+  const ex = Math.abs(ca) * W / 2 + Math.abs(sa) * D / 2 + 0.1, ey = Math.abs(sa) * W / 2 + Math.abs(ca) * D / 2 + 0.1;
+  pr.foot = [cx - ex, cy - ey, cx + ex, cy + ey]; pr.ang = q;
   pr.rubbleC = [wallC, roofC, woodC];
   // sistema local → mundo
   const lx0 = cx - nu * PVS / 2, ly0 = cy - nv * PVS / 2;
-  const W2 = (u, v) => { const x = lx0 + u * PVS - cx, y = ly0 + v * PVS - cy; return alongX ? [r2(cx + x), r2(cy + y)] : [r2(cx - y), r2(cy + x)]; };
-  const N2 = n => alongX ? n.slice() : [-n[1], n[0]];
-  const B2 = (u0, u1, v0, v1) => { const a = W2(u0, v0), b = W2(u1, v1); return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])]; };
-  const idxW = alongX ? q => q : q => { const i = q % nu, t = (q / nu) | 0, j = t % nv, k = (t / nv) | 0; return (k * nu + i) * nv + (nv - 1 - j); };
-  if (!alongX) rotate90(pr, cx, cy);
-  pr.win = wins.filter(w => w.glass).map(w => { const p = W2(w.u, w.v); return { idx: Int32Array.from(w.idx, idxW), c: [p[0], p[1], r2((w.k0 + w.k1) / 2 * PVS)], broken: false }; });
+  const W2 = (u, v) => { const x = lx0 + u * PVS - cx, y = ly0 + v * PVS - cy; return [r2(cx + x * ca - y * sa), r2(cy + x * sa + y * ca)]; };
+  const N2 = n => [r3(n[0] * ca - n[1] * sa), r3(n[0] * sa + n[1] * ca)];
+  const C2 = (u0, u1, v0, v1) => [W2(u0, v0), W2(u1, v0), W2(u1, v1), W2(u0, v1)];
+  const B2 = (u0, u1, v0, v1) => { const c = C2(u0, u1, v0, v1), xs = c.map(p => p[0]), ys = c.map(p => p[1]); return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]; };
+  const src = q ? rotateA(pr, cx, cy, ca, sa) : null;
+  let idxW = w => Int32Array.from(w.idx);
+  if (src) { const wn = new Map(); wins.forEach((w, n) => { if (w.glass) for (const a of w.idx) wn.set(a, n); });
+    const got = wins.map(() => []); for (let t = 0; t < src.length; t++) { const a = src[t]; if (a < 0) continue; const n = wn.get(a); if (n !== undefined && pr.mat[t] === GLASS) got[n].push(t); }
+    idxW = w => Int32Array.from(got[wins.indexOf(w)]); }
+  pr.win = wins.filter(w => w.glass).map(w => { const p = W2(w.u, w.v); return { idx: idxW(w), c: [p[0], p[1], r2((w.k0 + w.k1) / 2 * PVS)], broken: false }; });
   let gi = 0;
   pr.nav = { floors: nf, floorZ: Array.from({ length: nf }, (_, f) => r2(base(f) * PVS)),
-    rooms: rooms.map(R => ({ id: R.id, floor: R.f, kind: R.kind, box: B2(R.u0, R.u1, R.v0, R.v1), z0: r2(R.b * PVS), z1: r2(R.top * PVS) })),
+    rooms: rooms.map(R => ({ id: R.id, floor: R.f, kind: R.kind, box: B2(R.u0, R.u1, R.v0, R.v1), poly: C2(R.u0, R.u1, R.v0, R.v1), z0: r2(R.b * PVS), z1: r2(R.top * PVS) })),
     doors: doors.map(d => { const p = W2(d.u, d.v); return { x: p[0], y: p[1], z0: r2(d.k0 * PVS), z1: r2(d.k1 * PVS), w: r2(d.w * PVS), n: N2(d.n), a: d.a, b: d.b, out: !!d.out, leaf: !!d.leaf }; }),
     windows: wins.map(w => { const p = W2(w.u, w.v); return { x: p[0], y: p[1], z0: r2(w.k0 * PVS), z1: r2(w.k1 * PVS), w: 0.9, n: N2(FN[w.face]), room: w.room, glass: w.glass ? gi++ : -1 }; }),
-    stairs: stairs.map(t => ({ box: B2(t.u0, t.u1, t.v0, t.v1), z0: 0.1, z1: r2(t.k1 * PVS), up: N2([1, 0]), from: t.a, to: t.b })) };
+    stairs: stairs.map(t => ({ box: B2(t.u0, t.u1, t.v0, t.v1), poly: C2(t.u0, t.u1, t.v0, t.v1), z0: 0.1, z1: r2(t.k1 * PVS), up: N2([1, 0]), from: t.a, to: t.b })) };
   pr.cx = cx; pr.cy = cy;
   return pr;
 }
@@ -370,6 +379,24 @@ function rotate90(pr, cx, cy) {
   for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) { const a = (k * ny + j) * nx + i; if (!pr.mat[a]) continue;
     const b = (k * nx + i) * ny + (ny - 1 - j); o.mat[b] = pr.mat[a]; if (o.cr) { o.cr[b] = pr.cr[a]; o.cg[b] = pr.cg[a]; o.cb[b] = pr.cb[a]; } }
   Object.assign(pr, { x0: o.x0, y0: o.y0, nx: ny, ny: nx, mat: o.mat, cr: o.cr, cg: o.cg, cb: o.cb }); pr.solid0 = undefined; finish(pr);
+}
+
+// gira um objeto por um ângulo qualquer; cada voxel novo copia o voxel de origem mais perto
+// (e, se ele estiver vazio, um dos cantos), para parede fina não abrir frestas na diagonal. Devolve a origem de cada voxel.
+function rotateA(pr, cx, cy, ca, sa) {
+  const { nx, ny, nz } = pr, w = nx * PVS, h = ny * PVS, ex = Math.abs(ca) * w / 2 + Math.abs(sa) * h / 2, ey = Math.abs(sa) * w / 2 + Math.abs(ca) * h / 2;
+  const mx = Math.ceil(ex * 2 / PVS - 1e-6), my = Math.ceil(ey * 2 / PVS - 1e-6), o = newProp(pr.kind, cx - mx * PVS / 2, cy - my * PVS / 2, mx, my, nz);
+  const lx0 = pr.x0 - cx, ly0 = pr.y0 - cy, nxy = nx * ny, oxy = mx * my, src = new Int32Array(o.n).fill(-1);
+  const OFF = [[0, 0], [-0.4, -0.4], [0.4, -0.4], [-0.4, 0.4], [0.4, 0.4]], col = new Int32Array(5);
+  for (let j = 0; j < my; j++) for (let i = 0; i < mx; i++) { let nc = 0;
+    for (const [du, dv] of OFF) { const x = o.x0 - cx + (i + .5 + du) * PVS, y = o.y0 - cy + (j + .5 + dv) * PVS;
+      const si = Math.floor((x * ca + y * sa - lx0) / PVS), sj = Math.floor((-x * sa + y * ca - ly0) / PVS);
+      if (si >= 0 && sj >= 0 && si < nx && sj < ny) col[nc++] = sj * nx + si; }
+    if (!nc) continue;
+    for (let k = 0; k < nz; k++) { let a = -1; for (let c = 0; c < nc; c++) { const b = k * nxy + col[c]; if (pr.mat[b]) { a = b; break; } } if (a < 0) continue;
+      const t = k * oxy + j * mx + i; o.mat[t] = pr.mat[a]; src[t] = a; if (o.cr) { o.cr[t] = pr.cr[a]; o.cg[t] = pr.cg[a]; o.cb[t] = pr.cb[a]; } } }
+  Object.assign(pr, { x0: o.x0, y0: o.y0, nx: mx, ny: my, n: o.n, mat: o.mat, cr: o.cr, cg: o.cg, cb: o.cb }); pr.solid0 = undefined; finish(pr);
+  return src;
 }
 
 // ---------------------------------------------------------------- muros, cercas e sebes, sempre alinhados com x ou y
@@ -705,17 +732,22 @@ function gen(seed, themeKey) {
     for (let h = 0; h < n; h++, x += 14 + R() * 5) {
       const side = R() < 0.5 ? -1 : 1, w = 7 + R() * 2.5, d = 5.4 + R() * 1.6, along = R() < 0.7;
       const cy = roadY(x) + side * (11 + R() * 5);
-      const hw = (along ? w : d) / 2 + 0.6, hd = (along ? d : w) / 2 + 0.6;
-      if (!free(x - hw, cy - hd, x + hw, cy + hd, 3) || roadDist(x, cy) < hd + 1) continue;
-      add(building(x, cy, w, d, along, along ? -side : (R() < 0.5 ? 1 : -1), T, ns(), false));
+      // direção (uma de 32): segue a curva da estrada, com um desvio de vez em quando; algumas ficam de oitão para a estrada
+      const tq = Math.atan2(roadY(x + 2) - roadY(x - 2), 4) / (Math.PI / 16), jit = R() < 0.6 ? (R() < 0.5 ? -1 : 1) * (1 + ((R() * 3) | 0)) : 0;
+      const q = Math.round(tq) + jit + (along ? 0 : 8), ca = Math.abs(COS32[(q % 32 + 32) % 32]), sa = Math.abs(SIN32[(q % 32 + 32) % 32]);
+      const hw = ca * w / 2 + sa * d / 2 + 0.6, hd = sa * w / 2 + ca * d / 2 + 0.6;
+      if (!free(x - hw, cy - hd, x + hw, cy + hd, 2) || roadDist(x, cy) < hd + 1) continue;
+      add(building(x, cy, w, d, q, along ? -side : (R() < 0.5 ? 1 : -1), T, ns(), false));
       // muro ou cerca no quintal, atrás da casa
       const yb = cy + side * (hd + 3.5), kind = T.roofKind === 'tile' ? 'wall' : 'fence', len = 9 + R() * 6;
       if (free(x - len / 2, yb - 0.4, x + len / 2, yb + 0.4, 0.5)) add(linear(kind, x - len / 2, yb, len, true, ns()));
       if (R() < 0.5) { const xs = x + (R() < 0.5 ? -1 : 1) * (len / 2), y0 = Math.min(yb, cy), y1 = Math.max(yb, cy);
         if (free(xs - 0.4, y0, xs + 0.4, y1, 0.3)) add(linear(kind, xs, y0, y1 - y0, false, ns())); }
       // celeiro de pedra atrás do quintal (Normandia)
-      if (T.roofKind === 'tile' && R() < 0.5) { const bw = 10 + R() * 2, bd = 6 + R(), bx = x + (R() - 0.5) * 4, by = yb + side * (2.4 + bd / 2);
-        if (free(bx - bw / 2 - 0.5, by - bd / 2 - 0.5, bx + bw / 2 + 0.5, by + bd / 2 + 0.5, 1)) add(building(bx, by, bw, bd, true, -side, T, ns(), true)); }
+      if (T.roofKind === 'tile' && R() < 0.5) { const bw = 10 + R() * 2, bd = 6 + R(), bq = Math.round(tq) + (R() < 0.5 ? 0 : (R() < 0.5 ? -1 : 1));
+        const bc = Math.abs(COS32[(bq % 32 + 32) % 32]), bs = Math.abs(SIN32[(bq % 32 + 32) % 32]), ehx = bc * bw / 2 + bs * bd / 2, ehy = bs * bw / 2 + bc * bd / 2;
+        const bx = x + (R() - 0.5) * 4, by = yb + side * (2.4 + ehy);
+        if (free(bx - ehx - 0.5, by - ehy - 0.5, bx + ehx + 0.5, by + ehy + 0.5, 1)) add(building(bx, by, bw, bd, bq, -side, T, ns(), true)); }
       // carroça no quintal
       if (R() < 0.45) { const ox = x + (R() < 0.5 ? -1 : 1) * (hw + 3), oy = cy + side * 2, ax = R() < 0.5;
         if (free(ox - (ax ? 2.6 : 1), oy - (ax ? 1 : 2.6), ox + (ax ? 2.6 : 1), oy + (ax ? 1 : 2.6), 0.5)) add(cart(ox, oy, ax, R() < 0.5 ? 1 : -1, T.roofKind === 'thatch' && R() < 0.6, ns())); }
