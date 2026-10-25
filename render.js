@@ -17,21 +17,25 @@ class View {
     this.particles = []; this.labels = []; this.resize(); }
   resize() { const r = this.cv.getBoundingClientRect(); const w = Math.max(2, Math.round(r.width)), h = Math.max(2, Math.round(r.height));
     if (w === this.cw && h === this.ch) return false; this.cw = w; this.ch = h;
-    this.PX = this.fixedPX || (w < 900 ? 2 : 3); this.cv.width = w; this.cv.height = h;
+    // GBcss: tamanho do pixel do chão na tela (pixel art). Afastado, tanques e objetos são desenhados em pixel 1x1 (PX = 1)
+    // e o chão em blocos de GBcss; de perto o voxel já é grande e tudo volta ao pixel do chão (setPX).
+    this.GBcss = this.fixedPX || (w < 900 ? 2 : 3); this.PX = this.fixedPX || this.wantPX || 1; this.GB = Math.max(1, Math.round(this.GBcss / this.PX)); this.cv.width = w; this.cv.height = h;
     const W = this.W = Math.ceil(w / this.PX), H = this.H = Math.ceil(h / this.PX);
     this.off = document.createElement('canvas'); this.off.width = W; this.off.height = H; this.offc = this.off.getContext('2d');
     this.img = this.offc.createImageData(W, H); this.u32 = new Uint32Array(this.img.data.buffer);
     this.zb = new Float32Array(W * H); this.idb = new Int32Array(W * H); this.shadow = new Uint8Array(W * H); return true; }
+  setPX(px) { if (this.fixedPX || px === this.PX) return; this.wantPX = px; this.cw = 0; this.resize(); }
   proj(x, y, z, o) { const c = this.cam, X = x - c.x - c.ox, Y = y - c.y - c.oy; o[0] = this.W / 2 + X * c.S; o[1] = this.H / 2 - (Y * SA + z * CA) * c.S; o[2] = Y * CA - z * SA; return o; }
   unproj(sx, sy) { const c = this.cam; return [(sx - this.W / 2) / c.S + c.x + c.ox, -(sy - this.H / 2) / (c.S * SA) + c.y + c.oy, 0]; }
   clear(col) { this.u32.fill(col); this.zb.fill(Infinity); this.idb.fill(0); }
   // chão a partir da textura do mapa
   ground(T) { const { W, H, u32, cam } = this, S = cam.S, cx = cam.x + cam.ox, cy = cam.y + cam.oy, res = T.res, tw = T.w, th = T.h, out = T.out, data = T.data;
-    const step = res / S, tx0 = ((0 - W / 2) / S + cx - T.x0) * res;
-    for (let y = 0; y < H; y++) { const wy = -(y - H / 2) / (S * SA) + cy, ty = Math.floor((wy - T.y0) * res), row = y * W;
-      if (ty < 0 || ty >= th) { u32.fill(out, row, row + W); continue; }
+    const B = this.GB, step = res / S * B, tx0 = ((B / 2 - W / 2) / S + cx - T.x0) * res;
+    for (let y = 0; y < H; y += B) { const wy = -(y + B / 2 - H / 2) / (S * SA) + cy, ty = Math.floor((wy - T.y0) * res), row = y * W, yEnd = Math.min(H, y + B);
+      if (ty < 0 || ty >= th) { u32.fill(out, row, yEnd * W); continue; }
       const base = ty * tw; let tx = tx0;
-      for (let x = 0; x < W; x++, tx += step) { const ix = tx | 0; u32[row + x] = (tx < 0 || ix >= tw) ? out : data[base + ix]; } }
+      for (let x = 0; x < W; x += B, tx += step) { const ix = tx | 0; u32.fill((tx < 0 || ix >= tw) ? out : data[base + ix], row + x, row + Math.min(W, x + B)); }
+      for (let yy = y + 1; yy < yEnd; yy++) u32.copyWithin(yy * W, row, row + W); }
     this.zb.fill(Infinity); this.idb.fill(0); }
   // anel da zona de captura desenhado no chão
   groundRing(x, y, r, col, a) { const P = [0, 0, 0]; const n = Math.max(64, Math.round(r * this.cam.S * 4));
@@ -89,8 +93,11 @@ class View {
   plot(x, y, r, g, b, a, add) { x |= 0; y |= 0; if (x < 0 || y < 0 || x >= this.W || y >= this.H) return; const p = y * this.W + x, c = this.u32[p];
     if (add) this.u32[p] = pack(Math.min(255, (c & 255) + r * a), Math.min(255, ((c >> 8) & 255) + g * a), Math.min(255, ((c >> 16) & 255) + b * a));
     else this.u32[p] = pack((c & 255) * (1 - a) + r * a, ((c >> 8) & 255) * (1 - a) + g * a, ((c >> 16) & 255) * (1 - a) + b * a); }
-  line(x0, y0, x1, y1, r, g, b, a, add) { const dx = x1 - x0, dy = y1 - y0, n = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)))); if (n > 3000) return; for (let i = 0; i <= n; i++) this.plot(x0 + dx * i / n, y0 + dy * i / n, r, g, b, a, add); }
-  softDisc(cx, cy, R, r, g, b, a) { const R2 = R * R; for (let y = Math.floor(cy - R); y <= cy + R; y++) for (let x = Math.floor(cx - R); x <= cx + R; x++) { const d = ((x - cx) * (x - cx) + (y - cy) * (y - cy)) / R2; if (d <= 1) { const n = hash(x >> 1, y >> 1) * 0.35; this.plot(x, y, r, g, b, a * (1 - d) * (0.8 + n), false); } } }
+  line(x0, y0, x1, y1, r, g, b, a, add) { const dx = x1 - x0, dy = y1 - y0, n = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)))); if (n > 9000) return; for (let i = 0; i <= n; i++) this.plot(x0 + dx * i / n, y0 + dy * i / n, r, g, b, a, add); }
+  // fumaça em blocos do tamanho do pixel do chão: fica macia e não pesa na tela em 1x1
+  softDisc(cx, cy, R, r, g, b, a) { const R2 = R * R, B = this.GB || 1;
+    for (let y = Math.floor((cy - R) / B) * B; y <= cy + R; y += B) for (let x = Math.floor((cx - R) / B) * B; x <= cx + R; x += B) { const d = ((x - cx) * (x - cx) + (y - cy) * (y - cy)) / R2; if (d <= 1) { const n = hash(x >> 1, y >> 1) * 0.35, aa = a * (1 - d) * (0.8 + n);
+      for (let yy = y; yy < y + B; yy++) for (let xx = x; xx < x + B; xx++) this.plot(xx, yy, r, g, b, aa, false); } } }
   disc(cx, cy, R, r, g, b, a, add) { const R2 = R * R; for (let y = Math.floor(cy - R); y <= cy + R; y++) for (let x = Math.floor(cx - R); x <= cx + R; x++) { const d = (x - cx) * (x - cx) + (y - cy) * (y - cy); if (d <= R2) this.plot(x, y, r, g, b, a * (add ? 1 - d / R2 : 1), add); } }
   present() { this.offc.putImageData(this.img, 0, 0); const c = this.ctx; c.imageSmoothingEnabled = false; c.drawImage(this.off, 0, 0, this.W * this.PX, this.H * this.PX); }
   // ---------------------------------------------------------------- partículas (as mesmas do Banco)
@@ -123,7 +130,7 @@ class View {
     if (P.length > 7000) P.splice(0, P.length - 7000); }
   drawParticles() { const cam = this.cam, sc = cam.S / 30, P = [0, 0, 0], Q = [0, 0, 0], W = this.W, H = this.H, zb = this.zb;
     for (const q of this.particles) { if (q.k !== 2) continue; this.proj(q.x, q.y, q.z, P); const age = 1 - q.life / q.max; const R = (q.r0 + (q.r1 - q.r0) * age) * cam.S; const a = 0.3 * (1 - age) * Math.min(1, age * 6 + 0.2);
-      if (P[0] < -R || P[1] < -R || P[0] > W + R || P[1] > H + R) continue; this.softDisc(P[0], P[1], Math.min(R, cam.S * 1.6, 60), q.col[0], q.col[1], q.col[2], a); }
+      if (P[0] < -R || P[1] < -R || P[0] > W + R || P[1] > H + R) continue; this.softDisc(P[0], P[1], Math.min(R, cam.S * 1.6, 60 * this.GB), q.col[0], q.col[1], q.col[2], a); }
     for (const q of this.particles) { this.proj(q.x, q.y, q.z, P); const ix = P[0] | 0, iy = P[1] | 0; if (ix < -40 || iy < -40 || ix >= W + 40 || iy >= H + 40) continue;
       const inside = ix >= 0 && iy >= 0 && ix < W && iy < H; const behind = inside && P[2] > zb[iy * W + ix] + 0.12;
       if (q.k === 0) { if (behind || !inside) continue; const t = q.life / q.max; this.proj(q.px ?? q.x, q.py ?? q.y, q.pz ?? q.z, Q); const c = t > 0.5 ? [255, 250, 200] : [255, 190, 80]; this.line(Q[0], Q[1], P[0], P[1], c[0], c[1], c[2], 1, true); }

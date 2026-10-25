@@ -19,7 +19,7 @@ function start(msg, send, exitFn) {
     slots: Object.fromEntries(msg.tanks.map(t => [t.id, t])), me: null, myEnt: null, g: null, shells: new Map(), tracers: [], heat: new Set(),
     mouse: { x: 0, y: 0, in: false }, keys: {}, rmb: false, camOff: [0, 0], fireN: 0, repN: 0, sel: 0, aim: [0, 0, 0], hover: null, hoverT: 0,
     offset: null, lastSnap: 0, feed: [], shake: 0, paused: false, spec: null, last: performance.now(), hudT: 0, mmT: 0, reloadLocal: 0, seenAt: new Map(), loadedPrev: null };
-  st.view.cam.S = 64 / 6.6;
+  st.zoom = 64 / 6.6 * st.view.GBcss; st.view.cam.S = st.zoom / st.view.PX;   // zoom em pixels de tela por metro
   st.mm = buildMinimapBase(M, T);
   $('#hudMode').textContent = msg.modeName + ' · ' + MAPGEN.THEMES[msg.map].short;
   $('#feed').innerHTML = ''; $('#centerMsg').hidden = true; $('#pause').hidden = true; $('#analysis').hidden = true;
@@ -150,8 +150,8 @@ function unbindInput() { const cv = handlers.cv; if (!cv) return;
   cv.removeEventListener('wheel', handlers.wh); cv.removeEventListener('contextmenu', handlers.cm); handlers.cv = null; }
 // afastado ao máximo, do centro até a borda da tela cabem no máximo 150 m
 const ZOOM_MAX_M = 150;
-function zoomLimits() { const V = st.view; return [Math.max(0.7, Math.max(V.W, V.H / RENDER.SA) / (2 * ZOOM_MAX_M)), 42]; }
-function zoom(f) { const [a, b] = zoomLimits(); st.view.cam.S = clamp(st.view.cam.S * f, a, b); }
+function zoomLimits() { const V = st.view; return [Math.max(0.7 * V.GBcss, Math.max(V.cw, V.ch / RENDER.SA) / (2 * ZOOM_MAX_M)), 42 * V.GBcss]; }
+function zoom(f) { const [a, b] = zoomLimits(); st.zoom = clamp(st.zoom * f, a, b); }
 function sendInput() { if (!st || !net) return; const k = st.keys, p = st.paused;
   const thr = p ? 0 : (k.w || k.arrowup ? 1 : 0) - (k.s || k.arrowdown ? 1 : 0), steer = p ? 0 : (k.a || k.arrowleft ? 1 : 0) - (k.d || k.arrowright ? 1 : 0);
   net({ t: 'input', thr, steer, aim: st.aim.map(v => Math.round(v * 100) / 100), fire: st.fireN, sel: st.sel, rep: st.repN }); }
@@ -166,6 +166,9 @@ function frame(nowMs) {
   if (!st) return; raf = requestAnimationFrame(frame);
   const dt = Math.min(0.05, (nowMs - st.last) / 1000); st.last = nowMs;
   const V = st.view; V.resize();
+  { const [zmin, zmax] = zoomLimits(); st.zoom = clamp(st.zoom, zmin, zmax);
+    // voxel com menos de ~4 pixels na tela: desenha em 1x1 para não borrar; maior que isso, volta ao pixel do chão
+    const vpx = SIM.VS * st.zoom; V.setPX(V.PX === 1 ? (vpx > 4.4 ? V.GBcss : 1) : (vpx < 3.6 ? 1 : V.GBcss)); V.cam.S = st.zoom / V.PX; }
   const now = nowMs / 1000, rt = st.offset === null ? 0 : now + st.offset - 0.1;
   // poses interpoladas
   for (const ct of st.tanks.values()) {
@@ -189,7 +192,6 @@ function frame(nowMs) {
     const k = 1 - Math.exp(-dt * (st.rmb ? 3 : 6)); st.camOff[0] += (ox - st.camOff[0]) * k; st.camOff[1] += (oy - st.camOff[1]) * k;
     cam.x = focus.x + st.camOff[0]; cam.y = focus.y + st.camOff[1];
   }
-  const [zmin, zmax] = zoomLimits(); cam.S = clamp(cam.S, zmin, zmax);
   if (st.shake > 0) { st.shake = Math.max(0, st.shake - dt * 1.2); cam.ox = (Math.random() - .5) * st.shake * 0.6; cam.oy = (Math.random() - .5) * st.shake * 0.6; } else { cam.ox = cam.oy = 0; }
   // projéteis
   for (const [id, s] of st.shells) { s.t += dt; s.prev = s.pos.slice();
@@ -206,7 +208,7 @@ function frame(nowMs) {
   for (const ct of drawn) { V.shadowGrid(ct.tk.GH, ct.tk.TH); V.shadowGrid(ct.tk.GT, ct.tk.TT); }
   V.applyShadow();
   for (const pr of st.M.props) if (!pr.gone) V.splatProp(pr, 512 + pr.id);
-  for (const ct of drawn) V.splatTank(ct.tk, ct.ci, ct.id === st.myEnt && cam.S > 20 ? 'cut' : 'ext');
+  for (const ct of drawn) V.splatTank(ct.tk, ct.ci, ct.id === st.myEnt && st.zoom > 20 * V.GBcss ? 'cut' : 'ext');
   V.outline();
   drawAntennas(drawn);
   V.drawParticles();
