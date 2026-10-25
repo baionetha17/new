@@ -434,6 +434,16 @@ function linear(kind, ax, ay, len, alongX, s) {
 }
 
 // ---------------------------------------------------------------- objetos soltos
+// arbusto redondo: bola achatada e cheia de calombos, com uns galhos na base; o tanque passa por cima
+function bush(x, y, s, dry) {
+  const r = mulberry32(s), R = 0.55 + r() * 0.55, Hh = R * (1.1 + r() * 0.5), half = Math.ceil((R + 0.25) / PVS), nz = Math.ceil((Hh + 0.3) / PVS), base = dry ? [92, 104, 52] : [58, 96, 44];
+  const pr = newProp('bush', x - half * PVS, y - half * PVS, half * 2, half * 2, nz);
+  for (let k = 0; k < nz; k++) for (let j = 0; j < half * 2; j++) for (let i = 0; i < half * 2; i++) {
+    const px = (i + .5 - half) * PVS, py = (j + .5 - half) * PVS, pz = (k + .5) * PVS, cl = vn3(px / 0.35, py / 0.35, pz / 0.35, s), n = h3(i, j, k, s);
+    const e = (px * px + py * py) / (R * R) + ((pz - Hh * 0.45) / (Hh * 0.58)) ** 2; if (e > 0.78 + 0.45 * cl) continue;
+    if (pz < 0.25 && n > 0.8) { put(pr, i, j, k, TRUNK, [80, 64, 46], 10, s); continue; } if (pz < 0.12) continue;
+    const f = !dry && n > 0.993 ? [214, 200, 120] : mix(base, 0.72 + 0.45 * cl * (0.7 + 0.4 * pz / Hh)); put(pr, i, j, k, LEAF, f, 22, s); }
+  hollow(pr); finish(pr); pr.crush = true; pr.foot = [x - R, y - R, x + R, y + R]; pr.cx = x; pr.cy = y; return pr; }
 function haystack(x, y, s) {
   const r = mulberry32(s), R = 1.3 + r() * 0.5, Hh = 2.0 + r() * 0.5, half = Math.ceil((R + 0.2) / PVS), nz = Math.ceil((Hh + 0.6) / PVS);
   const pr = newProp('hay', x - half * PVS, y - half * PVS, half * 2, half * 2, nz);
@@ -540,8 +550,9 @@ function pole(x, y, s) {
   for (let k = 0; k < nz; k++) for (let j = 0; j < half * 2; j++) for (let i = 0; i < half * 2; i++) {
     const px = (i + .5 - half) * PVS, py = (j + .5 - half) * PVS, pz = (k + .5) * PVS;
     if (Math.hypot(px, py) < 0.11 && pz < H) { put(pr, i, j, k, WOOD, mix([96, 78, 58], 0.9 + 0.15 * h3(k >> 2, 0, 0, s)), 6, s); continue; }
-    if (Math.abs(pz - (H - 0.4)) < 0.05 && Math.abs(py) < 0.05 && Math.abs(px) < 0.75) { put(pr, i, j, k, WOOD, [86, 68, 50], 6, s); continue; }
-    if (Math.abs(pz - (H - 0.3)) < 0.06 && Math.abs(py) < 0.05 && [-0.65, -0.3, 0.3, 0.65].some(v => Math.abs(px - v) < 0.05)) put(pr, i, j, k, GLASS, [208, 214, 206], 0, s); }
+    // travessa atravessada na linha (os fios correm ao longo de x, junto da estrada)
+    if (Math.abs(pz - (H - 0.4)) < 0.05 && Math.abs(px) < 0.05 && Math.abs(py) < 0.75) { put(pr, i, j, k, WOOD, [86, 68, 50], 6, s); continue; }
+    if (Math.abs(pz - (H - 0.3)) < 0.06 && Math.abs(px) < 0.05 && [-0.65, -0.3, 0.3, 0.65].some(v => Math.abs(py - v) < 0.05)) put(pr, i, j, k, GLASS, [208, 214, 206], 0, s); }
   finish(pr);
   pr.crush = true; pr.foot = [x - 0.2, y - 0.2, x + 0.2, y + 0.2]; pr.cx = x; pr.cy = y; pr.trunkR = 0.11;
   return pr;
@@ -786,6 +797,12 @@ function gen(seed, themeKey) {
     if (free(x - 2, y - 2, x + 2, y + 2, 1.5) && roadDist(x, y) > 4) { add(tree(x, y, pick(T.trees), ns())); i++; } }
   for (let i = 0, tries = 0; i < T.hay && tries < 400; tries++) { const x = (R() - 0.5) * 460, y = (R() - 0.5) * 460;
     if (free(x - 2, y - 2, x + 2, y + 2, 2) && roadDist(x, y) > 4) { add(haystack(x, y, ns())); i++; } }
+  // arbustos redondos: em moitas na beira dos campos, perto das casas e soltos
+  { const dry = T.roofKind === 'thatch', put1 = (x, y) => { if (free(x - 1.2, y - 1.2, x + 1.2, y + 1.2, 0.4) && roadDist(x, y) > 3) { add(bush(x, y, ns(), dry)); return true; } return false; };
+    for (let i = 0, tries = 0; i < 45 && tries < 600; tries++) { const f = M.fields[(R() * M.fields.length) | 0], e = R() < 0.5, x = e ? f.x0 + R() * (f.x1 - f.x0) : (R() < 0.5 ? f.x0 : f.x1) + (R() - 0.5) * 2, y = e ? (R() < 0.5 ? f.y0 : f.y1) + (R() - 0.5) * 2 : f.y0 + R() * (f.y1 - f.y0);
+      if (put1(x, y)) { i++; const m = (R() * 3) | 0; for (let q = 0; q < m; q++) put1(x + (R() - 0.5) * 4, y + (R() - 0.5) * 4); } }
+    for (const pr of M.props.slice()) if (pr.struct && R() < 0.7) { const n = 1 + ((R() * 3) | 0); for (let q = 0; q < n; q++) { const a = R() * Math.PI * 2, d = 6 + R() * 4; put1(pr.cx + Math.cos(a) * d, pr.cy + Math.sin(a) * d); } }
+    for (let i = 0, tries = 0; i < 25 && tries < 300; tries++) if (put1((R() - 0.5) * 460, (R() - 0.5) * 460)) i++; }
   // índice espacial
   M.cells = Array.from({ length: NC * NC }, () => []);
   for (const pr of M.props) reindex(M, pr);
