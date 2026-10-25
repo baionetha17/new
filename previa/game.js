@@ -56,7 +56,7 @@ function propBits(pr, rem, sp, frac, keep) { if (!rem.length) return; const V = 
   for (let q = 0; q < n; q++) { const idx = rem[(Math.random() * rem.length) | 0]; MAPGEN.propCenter(pr, idx, P); const k = 0.72 + Math.random() * 0.2;
     V.chunk(P.slice(), [pr.cr[idx] * k, pr.cg[idx] * k, pr.cb[idx] * k], sp * (0.4 + Math.random() * 0.6), 1 + Math.random() * 1.5, keep || Math.random() < 0.5); } }
 // pedaços soltos de uma casa (bits = [x,y,z,r,g,b,...]): parte voa, parte fica no chão
-function spawnBits(bits, frac) { const V = st.view, n = bits.length / 6; if (!n) return; const m = Math.min(140, Math.ceil(n * frac));
+function spawnBits(bits, frac, cap) { const V = st.view, n = bits.length / 6; if (!n) return; const m = Math.min(cap || 140, Math.ceil(n * frac));
   for (let c = 0; c < m; c++) { const o = ((Math.random() * n) | 0) * 6, k = 0.62 + Math.random() * 0.15; V.chunk([bits[o], bits[o + 1], bits[o + 2]], [bits[o + 3] * k, bits[o + 4] * k, bits[o + 5] * k], 0.8, 1 + Math.random(), Math.random() < 0.5); }
   for (let q = 0; q < n; q += Math.max(1, (n / 6) | 0)) { const o = q * 6; V.dust([bits[o], bits[o + 1], bits[o + 2]], 6, [150, 140, 120]); } }
 function markDirty(pr) { if (!pr.dirty) { pr.dirty = true; st.dirty.push(pr); } }
@@ -74,12 +74,12 @@ function firePoints(pr) { const f = pr.fire; if (!f) return; const P = [0, 0, 0]
 // escurece o que o fogo lambeu
 function char(pr, x, y, z, r) { MAPGEN.ownColors(pr); const P = [0, 0, 0], r2 = r * r;
   for (const idx of pr.list) { if (!pr.mat[idx]) continue; MAPGEN.propCenter(pr, idx, P); const dx = P[0] - x, dy = P[1] - y, dz = P[2] - z; if (dx * dx + dy * dy + dz * dz > r2) continue;
-    pr.cr[idx] = Math.max(22, pr.cr[idx] * 0.86); pr.cg[idx] = Math.max(20, pr.cg[idx] * 0.84); pr.cb[idx] = Math.max(18, pr.cb[idx] * 0.84); } }
+    const k = MAPGEN.BURN[pr.mat[idx]] ? 0.95 : 0.975; pr.cr[idx] = Math.max(26, pr.cr[idx] * k); pr.cg[idx] = Math.max(22, pr.cg[idx] * (k - 0.005)); pr.cb[idx] = Math.max(20, pr.cb[idx] * (k - 0.005)); } }
 function handleEv(e) {
   const V = st.view, T = st.T, M = st.M;
   switch (e[0]) {
     case 'spawn': { const [, id, type, team, x, y, h, slot] = e; const tk = new SIM.Tank(type, id); tk.x = x; tk.y = y; tk.h = h; tk.update();
-      const ct = { id, type, team, slot, tk, ci: st.ciNext++ % 200, snaps: [{ t: 0, x, y, h, ty: 0, v: 0 }], vis: true, x, y, h, ty: 0, v: 0, f: 0, trail: [x, y], smoke: 0 };
+      const ct = { id, type, team, slot, tk, ci: st.ciNext++ % 64, snaps: [{ t: 0, x, y, h, ty: 0, v: 0 }], vis: true, x, y, h, ty: 0, v: 0, f: 0, trail: [x, y], smoke: 0 };
       st.byCi[ct.ci] = ct; st.tanks.set(id, ct); break; }
     case 'sp': V.sparks([e[1], e[2], e[3]], [e[4], e[5], e[6]], e[7], e[8]); break;
     case 'db': { const ct = tankOf(e[7]); if (!ct) break; const g = ct.tk.grid(e[8]), i = e[9]; V.debris([e[1], e[2], e[3]], [e[4], e[5], e[6]], [g.cr[i], g.cg[i], g.cb[i]], e[10]); break; }
@@ -125,16 +125,16 @@ function handleEv(e) {
       if (rem.length) { MAPGEN.propCenter(pr, rem[0], P); AUDIO.glass(distTo(P)); } markDirty(pr); break; }
     // casa assentando: o que perdeu apoio cai
     case 'ps': { const pr = M.props[e[1]]; if (!pr) break; const out = { bits: [], falls: [] }; if (!MAPGEN.settle(pr, out)) break;
-      spawnBits(out.bits, 0.6); if (!pr.hide) pr.hide = new Uint8Array(pr.n);
+      spawnBits(out.bits, pr.fire ? 0.08 : 0.6, pr.fire ? 24 : 140); if (!pr.hide) pr.hide = new Uint8Array(pr.n);
       for (const f of out.falls) { const n = f.idx.length, xs = new Float32Array(n), ys = new Float32Array(n), zs = new Float32Array(n), cols = new Uint32Array(n), P = [0, 0, 0];
         for (let q = 0; q < n; q++) { const idx = f.idx[q]; pr.hide[idx] = 1; MAPGEN.propCenter(pr, idx, P); xs[q] = P[0]; ys[q] = P[1]; zs[q] = P[2]; const k = 0.8 + 0.2 * MAPGEN.h3(idx, 0, 0, 5);
           cols[q] = RENDER.pack(pr.cr[idx] * k, pr.cg[idx] * k, pr.cb[idx] * k); }
         st.drops.push({ pr, idx: f.idx, xs, ys, zs, cols, n, drop: f.drop, bits: f.bits, t: 0, dur: Math.sqrt(2 * f.drop / G) + 0.04 }); }
       if (pr.fire) firePoints(pr); markDirty(pr); break; }
     case 'pi': { const pr = M.props[e[1]]; if (!pr) break; pr.fire = { x: e[2], y: e[3], z: e[4], r: 0.5, pts: [] }; V.fireball([e[2], e[3], e[4]], 0.3, false); firePoints(pr); break; }
-    case 'pb': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.burn(pr, e[2], e[3], e[4], e[5], e[6]);
+    case 'pb': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.burn(pr, e[2], e[3], e[4], e[5], e[6], e[7], e[8]);
       if (!pr.fire) pr.fire = { x: e[2], y: e[3], z: e[4], r: e[5], pts: [] }; pr.fire.r = e[5]; char(pr, e[2], e[3], e[4], e[5] + 0.4);
-      propBits(pr, rem, 0.6, 0.02); markDirty(pr); firePoints(pr); break; }
+      markDirty(pr); firePoints(pr); break; }
     case 'pf': { const pr = M.props[e[1]]; if (pr) pr.fire = null; break; }
     case 'hi': { const [, sh, tg, res, plate, eff, pen, crew, mods, aname] = e;
       const p = tankOf(tg); if (p) AUDIO.hit(distTo([p.x, p.y]), res === 'pen');
@@ -245,11 +245,11 @@ function frame(nowMs) {
   for (const pr of st.dirty) { RENDER.refreshProp(pr); RENDER.reshadow(st.T, pr); pr.dirty = false; if (pr.fire) firePoints(pr); } st.dirty.length = 0;
   // de perto, as casas perto do centro da tela aparecem em corte (sem telhado nem andar de cima)
   const cutR = st.zoom > 20 * V.GBcss ? 26 : 0;
-  for (const pr of st.M.props) if (!pr.gone) { const fl = pr.falling; if (!fl) V.splatProp(pr, 512 + pr.id, cutR && pr.struct && Math.abs(pr.cx - cam.x) < cutR && Math.abs(pr.cy - cam.y) < cutR); }
+  for (const pr of st.M.props) if (!pr.gone) { const fl = pr.falling; if (!fl) V.splatProp(pr, 128 + pr.id, cutR && pr.struct && Math.abs(pr.cx - cam.x) < cutR && Math.abs(pr.cy - cam.y) < cutR); }
   for (let i = st.drops.length - 1; i >= 0; i--) { const f = st.drops[i]; f.t += dt; const u = Math.min(1, f.t / f.dur);
     if (u < 1) { V.splatDrop(f, f.drop * (1 - u * u)); continue; }
     st.drops.splice(i, 1); const pr = f.pr; if (pr.hide) { for (const idx of f.idx) pr.hide[idx] = 0; if (!st.drops.some(d => d.pr === pr)) pr.hide = null; }
-    if (f.bits) spawnBits(f.bits, 0.35); const P = [f.xs[0], f.ys[0], f.zs[0]], d = distTo(P);
+    if (f.bits) spawnBits(f.bits, f.pr.fire ? 0.06 : 0.35, f.pr.fire ? 24 : 140); const P = [f.xs[0], f.ys[0], f.zs[0]], d = distTo(P);
     if (f.n > 400) { AUDIO.boom(d, false); st.shake = Math.max(st.shake, d < 40 ? 0.35 : 0); for (let q = 0; q < 8; q++) { const j = (Math.random() * f.n) | 0; V.dust([f.xs[j], f.ys[j], f.zs[j]], 12, [150, 140, 120]); } } else AUDIO.thud(d); }
   for (let i = st.falling.length - 1; i >= 0; i--) { const f = st.falling[i]; f.t += dt; const u = Math.min(1, f.t / f.dur); f.pr.falling = u < 1;
     if (u < 1) V.splatFalling(f, 0, u); else { st.falling.splice(i, 1); V.dust([f.cx + f.ux * 4, f.cy + f.uy * 4, 0.3], 20, [110, 120, 80]); AUDIO.thud(distTo([f.cx, f.cy])); } }
@@ -310,9 +310,9 @@ function drawShells(dt) { const V = st.view, P = [0, 0, 0], Q = [0, 0, 0];
 // ================================================================ mira e análise
 function aimFromScreen(mx, my) { const V = st.view, x = (mx / V.PX) | 0, y = (my / V.PX) | 0; if (x < 0 || y < 0 || x >= V.W || y >= V.H) return null;
   const id = V.idb[y * V.W + x];
-  if (id > 0) { const v = id - 1, code = v >>> 20, idx = v & 0xFFFFF;
-    if (code < 512) { const ct = st.byCi[code >> 1]; if (ct) { const g = ct.tk.grid(code & 1); if (g.mat[idx]) return { p: toW(ct.tk.tf(g), gCenter(g, idx, [0, 0, 0]), [0, 0, 0]), ct }; } }
-    else { const pr = st.M.props[code - 512]; if (pr && pr.mat[idx]) return { p: MAPGEN.propCenter(pr, idx, [0, 0, 0]), pr }; } }
+  if (id > 0) { const v = id - 1, code = v >>> 21, idx = v & 0x1FFFFF;
+    if (code < 128) { const ct = st.byCi[code >> 1]; if (ct) { const g = ct.tk.grid(code & 1); if (g.mat[idx]) return { p: toW(ct.tk.tf(g), gCenter(g, idx, [0, 0, 0]), [0, 0, 0]), ct }; } }
+    else { const pr = st.M.props[code - 128]; if (pr && pr.mat[idx]) return { p: MAPGEN.propCenter(pr, idx, [0, 0, 0]), pr }; } }
   return { p: V.unproj(mx / V.PX, my / V.PX) }; }
 function shotFrom(me, p) { const tk = me.tk, i = st.me.loaded !== null ? st.me.loaded : st.sel, A = SIM.ammoObj(tk.TK, i), B = tk.TK.barrel;
   const mz = toW(tk.TT, [B.x1, 0, B.z], [0, 0, 0]); const dx = p[0] - mz[0], dy = p[1] - mz[1], d = Math.max(1, Math.hypot(dx, dy));

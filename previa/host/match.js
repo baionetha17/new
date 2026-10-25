@@ -274,17 +274,17 @@ class Match {
   // ---------------------------------------------------------------- fogo no cenário
   maybeIgnite(pr, q, r) {
     if (!MAP.flammableNear(pr, q[0], q[1], q[2], r + 0.6)) return;
-    const chance = { hay: 0.9, barn: 0.8, house: 0.6, cart: 0.5, fence: 0.35, tree: 0.3, hedge: 0.25 }[pr.kind] || 0.2; if (Math.random() > chance) return;
-    const maxR = { hay: 2.6, house: 8, barn: 9, tree: 3.8, hedge: 3, cart: 2.5 }[pr.kind] || 2.2;
-    pr.fire = { x: q[0], y: q[1], z: q[2], r: 0.5, maxR, t: 0, next: 0.6, idle: 0, life: 22 + Math.random() * 12, seed: (Math.random() * 1e6) | 0, n: 0 };
+    // HE em casa quase sempre só abre buraco; quando pega, o fogo anda devagar e dura minutos
+    const chance = { hay: 0.9, barn: 0.35, house: 0.2, cart: 0.5, fence: 0.35, tree: 0.3, hedge: 0.25 }[pr.kind] || 0.2; if (Math.random() > chance) return;
+    const maxR = { hay: 2.6, house: 8, barn: 9, tree: 3.8, hedge: 3, cart: 2.5 }[pr.kind] || 2.2, slow = !!pr.struct;
+    pr.fire = { x: q[0], y: q[1], z: q[2], r: 0.5, maxR, v: slow ? 0.1 : 0.5, t: 0, next: 0.6, age: 0, life: slow ? 200 + Math.random() * 60 : 30 + Math.random() * 15, seed: (Math.random() * 1e6) | 0 };
     this.fires.push(pr); this.ev.push(['pi', pr.id, q[0], q[1], q[2]]); }
   stepFires(dt) {
     for (const pr of this.fires) { const f = pr.fire; if (!f) continue; f.t += dt; if (f.t < f.next) continue; f.next += 1;
-      f.r = Math.min(f.maxR, r2(f.r + 0.5)); const seed = (f.seed + f.n++) | 0;
-      const rem = MAP.burn(pr, f.x, f.y, f.z, f.r, seed); this.ev.push(['pb', pr.id, f.x, f.y, f.z, f.r, seed]);
-      if (!rem.length && f.r >= f.maxR) f.idle++;
-      this.checkCollapse(pr);
-      if (f.t > f.life || f.idle >= 3) this.putOut(pr); }
+      f.age++; f.r = Math.min(f.maxR, r2(0.5 + f.v * f.age));
+      const rem = MAP.burn(pr, f.x, f.y, f.z, f.r, f.age, f.v, f.seed); this.ev.push(['pb', pr.id, f.x, f.y, f.z, f.r, f.age, f.v, f.seed]);
+      if (rem.length) this.checkCollapse(pr);
+      if (f.t > f.life) this.putOut(pr); }
     this.fires = this.fires.filter(pr => pr.fire); }
   putOut(pr) { if (!pr.fire) return; pr.fire = null; this.ev.push(['pf', pr.id]); }
   // casa: o que perdeu apoio cai (a conta é feita aos poucos, juntando os estragos de alguns ticks)
