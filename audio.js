@@ -28,6 +28,7 @@ const AUDIO = (() => {
     ric(d) { const a = att(d), dl = delayOf(d); burst(0.12, 6000, 2000, 0.4 * a, 3, dl); tone(0.55, 2400, 700, 0.18 * a, 'sine', dl + 0.03); },
     boom(d, big) { const a = att(d), dl = delayOf(d); burst(big ? 2.6 : 1.3, big ? 1400 : 1800, 40, (big ? 1.0 : 0.7) * a, 0.5, dl); tone(big ? 1.4 : 0.6, 70, 25, 0.8 * a, 'sine', dl); },
     thud(d) { const a = att(d); burst(0.35, 700, 80, 0.35 * a, 0.8, delayOf(d)); },
+    glass(d) { const a = att(d), dl = delayOf(d); burst(0.35, 9000, 2500, 0.3 * a, 4, dl); for (let i = 0; i < 4; i++) tone(0.12 + Math.random() * 0.2, 3000 + Math.random() * 3000, 2000, 0.05 * a, 'sine', dl + i * 0.04); },
     crunch(d) { const a = att(d); burst(0.2, 1500, 300, 0.25 * a, 1.5, delayOf(d)); },
     reload() { tone(0.06, 900, 700, 0.12, 'square'); tone(0.08, 500, 400, 0.12, 'square', 0.09); },
     engine(on, v) { if (!ac) return;
