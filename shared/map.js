@@ -6,14 +6,16 @@
 'use strict';
 const PVS = 0.1, SIZE = 500, HALF = 250, CELL = 10, NC = SIZE / CELL;
 // materiais
-const LEAF = 1, TRUNK = 2, WALL = 3, TILE = 4, HAY = 5, WOOD = 6, STONE = 7, FLOOR = 8, RUBBLE = 9, THATCH = 10, SAND = 11, METAL = 12, GLASS = 13, RUBBER = 14, DIRT = 15, BRICK = 16, CLOTH = 17;
+const LEAF = 1, TRUNK = 2, WALL = 3, TILE = 4, HAY = 5, WOOD = 6, STONE = 7, FLOOR = 8, RUBBLE = 9, THATCH = 10, SAND = 11, METAL = 12, GLASS = 13, RUBBER = 14, DIRT = 15, BRICK = 16, CLOTH = 17, LOG = 18;
 // mm de penetração perdidos por metro atravessado, convertidos para cada voxel
-const RES_M = [0, 1.2, 48, 80, 12, 4, 16, 90, 8, 60, 6, 120, 30, 2, 20, 50, 85, 3];
+const RES_M = [0, 1.2, 48, 80, 12, 4, 16, 90, 8, 60, 6, 120, 30, 2, 20, 50, 85, 3, 40];
 const RES = RES_M.map(v => v * PVS);
-const OPAC = [0, 0.03, 1, 1, 1, 1, 0.4, 0.45, 1, 1, 1, 1, 1, 0.1, 1, 1, 1, 1];   // quanto cada voxel tapa a visão
-const SOFT = [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];              // folha e feno: miolo oco
-const BURN = [0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1];              // o que pega fogo (madeira, assoalho, palha, pano)
-const HARD = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0];              // alvenaria: o tanque passa bem devagar
+const OPAC = [0, 0.03, 1, 1, 1, 1, 0.4, 0.45, 1, 1, 1, 1, 1, 0.1, 1, 1, 1, 1, 1];   // quanto cada voxel tapa a visão
+const SOFT = [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];              // folha e feno: miolo oco
+const BURN = [0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1];           // o que pega fogo (madeira, assoalho, palha, pano, toras)
+// segundos que o voxel aguenta no fogo depois que as chamas chegam nele (varia ±40% por voxel); tora de parede quase não some, só escurece
+const BURN_T = [0, 4, 0, 0, 0, 6, 50, 0, 150, 0, 25, 0, 0, 0, 0, 0, 0, 10, 600];
+const HARD = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0];              // alvenaria: o tanque passa bem devagar
 const RUBBLE_Z = 0.55;                                                       // altura a que a esteira amassa o entulho
 
 function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
@@ -143,17 +145,17 @@ function building(cx, cy, W, D, alongX, front, T, s, barn) {
     if (log) return dc < 2 && t === 0 ? [96, 72, 50] : mix(logC, (k % 2 ? 1 : 0.8) * (0.9 + 0.16 * h3(k >> 1, a >> 3, 3, s)));
     if (thatch) { if (pz < 0.45) return pz > 0.4 ? [120, 94, 68] : [150, 118, 84]; return mix(wallC, 0.94 + 0.08 * vn3(a * PVS / 0.5, t, pz / 0.5, s)); }
     return stone(a * PVS, pz, dc < 4, wallC); };
-  const WM = log ? WOOD : WALL;
+  const WM = log ? LOG : WALL;
   for (let k = 0; k < wallK; k++) for (let j = V0; j < V1; j++) for (let i = U0; i < U1; i++) {
     const tu = Math.min(i - U0, U1 - 1 - i), tv = Math.min(j - V0, V1 - 1 - j), t = Math.min(tu, tv); if (t >= WT) continue;
     const gable = tu < tv; set(i, j, k, WM, extCol(gable ? j : i, t, k, gable ? tv : tu), thatch ? 8 : 10); }
   // frente e fundos sobem até encostar no beiral
   for (let j = V0; j < V1; j++) { const tv = Math.min(j - V0, V1 - 1 - j); if (tv >= WT) continue; const kt = Math.ceil(roofK(j) - RT - 0.5);
-    for (let k = wallK; k < kt; k++) for (let i = U0; i < U1; i++) set(i, j, k, log ? WOOD : WALL, extCol(i, Math.min(tv, WT - 2), k, 9), 8); }
+    for (let k = wallK; k < kt; k++) for (let i = U0; i < U1; i++) set(i, j, k, log ? LOG : WALL, extCol(i, Math.min(tv, WT - 2), k, 9), 8); }
   // empenas: as pontas sobem até o telhado (tábuas em Kursk, pedra na Normandia)
   for (let j = V0; j < V1; j++) { const top = roofK(j) - RT * 0.5;
     for (let k = wallK; k < top; k++) for (let t = 0; t < WT; t++) for (const i of [U0 + t, U1 - 1 - t]) {
-      if (thatch) set(i, j, k, WOOD, mix([128, 98, 66], ((j >> 1) & 1 ? 0.88 : 1) * (j % 2 ? 1 : 0.84)), 8); else set(i, j, k, WALL, extCol(j, Math.min(t, WT - 2), k, 9), 10); } }
+      if (thatch) set(i, j, k, LOG, mix([128, 98, 66], ((j >> 1) & 1 ? 0.88 : 1) * (j % 2 ? 1 : 0.84)), 8); else set(i, j, k, WALL, extCol(j, Math.min(t, WT - 2), k, 9), 10); } }
   // assoalho, piso de cima com vigas e forro
   const board = (i, j, k) => mix([104, 78, 54], (j % 2 ? 1 : 0.84) * (0.9 + 0.14 * h3(j >> 1, (i / 14) | 0, k, s)));
   if (barn) box(iu0, iu1, iv0, iv1, 0, 1, DIRT, (i, j) => mix([112, 94, 66], 0.82 + 0.26 * h3(i, j, 0, s)), 6);
@@ -169,7 +171,7 @@ function building(cx, cy, W, D, alongX, front, T, s, barn) {
   const spans = []; { let u = iu0; for (const c of cuts) { spans.push([u, c]); u = c + IT; } spans.push([u, iu1]); }
   const kindsG = barn ? ['celeiro'] : spans.length === 1 ? ['cozinha'] : nf === 2 ? (spans.length === 3 ? ['entrada', 'cozinha', 'sala'] : ['sala', 'cozinha'])
     : spans.length === 3 ? ['entrada', 'cozinha', 'quarto'] : ['cozinha', 'quarto'];
-  const intM = log ? WOOD : WALL, intCol = (i, j, k) => log ? mix([150, 116, 78], (k % 2 ? 1 : 0.86)) : mix(plaster, 0.93 + 0.07 * h3(i >> 2, j >> 2, k >> 2, s));
+  const intM = log ? LOG : WALL, intCol = (i, j, k) => log ? mix([150, 116, 78], (k % 2 ? 1 : 0.86)) : mix(plaster, 0.93 + 0.07 * h3(i >> 2, j >> 2, k >> 2, s));
   const rooms = [], doors = [], wins = [], stairs = [];
   const bandLo = fBack === 0 ? iv0 : iv1 - 9, bandHi = bandLo + 9;               // faixa da escada, encostada na parede de trás
   const doorPos = (lo, hi, avoid) => { const ok = []; for (let a = lo; a <= hi; a++) if (!avoid || a + 9 + 2 <= avoid[0] || a >= avoid[1] + 2) ok.push(a); return ok.length ? ok[(r() * ok.length) | 0] : -1; };
@@ -551,13 +553,14 @@ function crushBox(pr, x, y, h, hl, hw, zlo, zhi, rem) { rem = rem || [];
     for (let k = k0; k <= k1; k++) { const idx = (k * ny + j) * nx + i; if (!mat[idx]) continue; if (!SOFT[mat[idx]]) pr.solid--; mat[idx] = 0; rem.push(idx); } } }
   return rem; }
 // fogo: queima o que é inflamável dentro do raio (seed escolhe quais voxels vão primeiro)
-function burn(pr, x, y, z, r, seed, rem) { own(pr); rem = rem || [];
-  const P = PVS, r2 = r * r, { nx, ny, nz, mat } = pr;
-  const i0 = Math.max(0, Math.floor((x - r - pr.x0) / P)), i1 = Math.min(nx - 1, Math.floor((x + r - pr.x0) / P)), j0 = Math.max(0, Math.floor((y - r - pr.y0) / P)), j1 = Math.min(ny - 1, Math.floor((y + r - pr.y0) / P));
-  const k0 = Math.max(0, Math.floor((z - r) / P)), k1 = Math.min(nz - 1, Math.floor((z + r) / P));
-  for (let k = k0; k <= k1; k++) for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) { const idx = (k * ny + j) * nx + i, m = mat[idx]; if (!BURN[m]) continue;
-    const dx = pr.x0 + (i + .5) * P - x, dy = pr.y0 + (j + .5) * P - y, dz = (k + .5) * P - z; if (dx * dx + dy * dy + dz * dz > r2) continue;
-    if (h3(i, j, k, seed) > (m === WOOD || m === FLOOR ? 0.25 : 0.7)) continue;
+// fogo: a frente das chamas sai de (x,y,z) a v m/s e já está no raio r; age = segundos desde que pegou.
+// Cada voxel inflamável só some depois de passar o seu tempo de queima (BURN_T) dentro do fogo.
+function burn(pr, x, y, z, r, age, v, seed, rem) { own(pr); rem = rem || [];
+  const P = PVS, r2 = r * r, { nx, ny, mat, list } = pr, nxy = nx * ny;
+  for (let a = 0; a < list.length; a++) { const idx = list[a], m = mat[idx]; if (!BURN[m]) continue;
+    const i = idx % nx, j = ((idx / nx) | 0) % ny, k = (idx / nxy) | 0;
+    const dx = pr.x0 + (i + .5) * P - x, dy = pr.y0 + (j + .5) * P - y, dz = (k + .5) * P - z, d2 = dx * dx + dy * dy + dz * dz; if (d2 > r2) continue;
+    if (age - Math.sqrt(d2) / v < BURN_T[m] * (0.6 + 0.8 * h3((i / 3) | 0, (j / 3) | 0, (k / 3) | 0, seed))) continue;
     if (!SOFT[m]) pr.solid--; mat[idx] = 0; rem.push(idx); }
   return rem; }
 function flammableNear(pr, x, y, z, r) { const P = PVS, { nx, ny, nz, mat } = pr;
@@ -790,7 +793,7 @@ function obbHitsBox(cx, cy, h, hl, hw, b) { const c = Math.cos(h), s = Math.sin(
     for (const p of bp) { const d = p[0] * a[0] + p[1] * a[1]; b0 = Math.min(b0, d); b1 = Math.max(b1, d); } if (a1 < b0 || b1 < a0) return false; }
   return true; }
 
-return { PVS, SIZE, HALF, RES, OPAC, SOFT, BURN, RUBBLE_Z, MAT: { LEAF, TRUNK, WALL, TILE, HAY, WOOD, STONE, FLOOR, RUBBLE, THATCH, SAND, METAL, GLASS, RUBBER, DIRT, BRICK, CLOTH },
+return { PVS, SIZE, HALF, RES, OPAC, SOFT, BURN, RUBBLE_Z, BURN_T, MAT: { LEAF, TRUNK, WALL, TILE, HAY, WOOD, STONE, FLOOR, RUBBLE, THATCH, SAND, METAL, GLASS, RUBBER, DIRT, BRICK, CLOTH, LOG },
   HARD, THEMES, generate, propAt, propCenter, propsAlong, rayBox, los, obbHitsBox, mulberry32, h3,
   tunnel, crushBox, burn, flammableNear, settle, push, shatter, winAt, fell, fallDir, craterRim, addVisual, reindex, own, ownColors };
 });
