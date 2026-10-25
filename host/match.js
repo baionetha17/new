@@ -15,7 +15,7 @@ class Match {
     this.map = MAP.generate(room.seed, room.map);
     this.mode = room.mode; this.limit = room.time * 60; this.killGoal = room.kills;
     this.t = 0; this.tick = 0; this.ev = []; this.ents = []; this.shells = []; this.nextEnt = 1; this.nextShell = 1;
-    this.score = [0, 0]; this.zone = { prog: 0, owner: -1 }; this.over = false;
+    this.score = [0, 0]; this.zone = { prog: 0, owner: -1 }; this.over = false; this.craters = []; this.fires = [];
     const perTeam = [0, 0];
     this.slots = room.tanks.map(rt => ({ id: rt.id, team: rt.team, type: rt.type, bot: rt.bot, driver: rt.driver, gunner: rt.gunner,
       ammo: rt.ammo.slice(), spawnI: perTeam[rt.team]++ % 4, ent: null, respawnAt: -1,
@@ -73,6 +73,7 @@ class Match {
       const dk = tk.deadMods().join(','); if (dk !== e.deadKey) { e.deadKey = dk; this.ev.push(['md', e.id, tk.deadMods()]); }
     }
     for (const s of this.shells) this.stepShell(s, dt);
+    this.stepFires(dt);
     this.shells = this.shells.filter(s => s.alive);
     if (this.tick % 5 === 0) this.visibility();
     this.rules(dt);
@@ -84,6 +85,7 @@ class Match {
     let thr = I.thr, st = I.steer; if (ds.both || tk.repair && tk.repair.kind === 'fix') { thr = 0; st = 0; }
     const eng = tk.mk.engine; let pw = eng.hp < eng.max * 0.5 ? 0.55 : 1;
     if ((tk.mk.radiator && tk.mk.radiator.dead) || (tk.mk.clutch && tk.mk.clutch.dead) || (tk.mk.fans && tk.mk.fans.dead)) pw *= 0.75;
+    pw *= this.slowAt(tk.x, tk.y, tk.h, g);
     let nx = tk.x, ny = tk.y, nh = tk.h;
     if (ds.L || ds.R) {
       e.v = approach(e.v, 0, 5 * dt);
@@ -118,18 +120,22 @@ class Match {
       if (obbOverlap(x, y, h, hl, hw, t.x, t.y, t.h, t.game.len / 2, t.game.wid / 2)) return true; }
     return false;
   }
+  // entulho e cratera deixam o tanque mais lento
+  slowAt(x, y, h, g) { let f = 1;
+    for (const c of this.craters) { const dx = x - c[0], dy = y - c[1]; if (dx * dx + dy * dy < c[2] * c[2]) { f = 0.6; break; } }
+    for (const id of MAP.propsAlong(this.map, x - 4, y - 4, x + 4, y + 4)) { const pr = this.map.props[id]; if (!pr.rubble) continue;
+      if (MAP.obbHitsBox(x, y, h, g.len / 2, g.wid / 2, pr.foot)) { f = Math.min(f, 0.4); break; } }
+    return f; }
   crush(e, x, y, h) {
-    const g = e.tank.game, hl = g.len / 2 + 0.15, hw = g.wid / 2 + 0.1, c = Math.cos(h), s = Math.sin(h);
+    const g = e.tank.game, hl = r2(g.len / 2 + 0.15), hw = r2(g.wid / 2 + 0.1), xq = r2(x), yq = r2(y), hq = r3(h);
     for (const id of MAP.propsAlong(this.map, x - 5, y - 5, x + 5, y + 5)) { const pr = this.map.props[id]; if (!pr.crush || pr.gone) continue;
       if (!MAP.obbHitsBox(x, y, h, hl, hw, pr.foot)) continue;
-      if (pr.kind === 'tree') { this.fellTree(pr, Math.cos(h), Math.sin(h)); e.v *= 0.7; continue; }
-      const rem = [], p = [0, 0, 0];
-      for (const idx of pr.list) { if (!pr.mat[idx]) continue; MAP.propCenter(pr, idx, p); const dx = p[0] - x, dy = p[1] - y, u = dx * c + dy * s, v = -dx * s + dy * c;
-        if (Math.abs(u) < hl && Math.abs(v) < hw && p[2] < 2.6) { pr.mat[idx] = 0; rem.push(idx); } }
-      if (rem.length) { this.ev.push(['pr', pr.id, rem, 1]); e.v *= 0.93; }
+      if ((pr.kind === 'tree' || pr.kind === 'pole') && !pr.fallen) { this.fellProp(pr, Math.cos(h), Math.sin(h)); e.v *= pr.kind === 'pole' ? 0.95 : 0.7; continue; }
+      const zlo = pr.rubble ? MAP.RUBBLE_Z : 0, rem = MAP.crushBox(pr, xq, yq, hq, hl, hw, zlo, 2.6);
+      if (rem.length) { this.ev.push(['pq', pr.id, xq, yq, hq, hl, hw, zlo]); e.v *= pr.kind === 'sand' || pr.kind === 'cart' ? 0.88 : 0.95; }
     }
   }
-  fellTree(pr, dx, dy) { if (pr.gone) return; pr.gone = true; for (const idx of pr.list) pr.mat[idx] = 0; this.ev.push(['pd', pr.id, r2(dx), r2(dy)]); }
+  fellProp(pr, dx, dy) { if (pr.gone || pr.fallen) return; const dir = MAP.fallDir(dx, dy); if (pr.fire) this.putOut(pr); MAP.fell(this.map, pr, dir); this.ev.push(['pd', pr.id, dir]); }
   turret(e, dt) {
     const tk = e.tank, g = tk.game, a = e.inp.aim;
     if (!a || tk.turretOff || !tk.hasSeat('gunner') || tk.mk.ring.dead) return;
@@ -207,49 +213,69 @@ class Match {
   endShell(s, p) { if (!s.alive) return; s.alive = false; this.ev.push(['sh', s.id, r2(p[0]), r2(p[1]), r2(Math.max(0, p[2]))]); }
   groundImpact(s, p) {
     const A = s.A, big = A.t === 'HE' || A.fill > 300;
-    this.ev.push(['cr', r2(p[0]), r2(p[1]), r2(0.3 + A.cal / 300 + (big ? 0.5 : 0))], ['du', r2(p[0]), r2(p[1]), 0.1, big ? 30 : 18]);
+    const cr = r2(0.3 + A.cal / 300 + (big ? 0.5 : 0)); if (big) this.craters.push([p[0], p[1], cr * 1.2]);
+    this.ev.push(['cr', r2(p[0]), r2(p[1]), cr, big ? 1 : 0], ['du', r2(p[0]), r2(p[1]), 0.1, big ? 30 : 18]);
     if (big) { this.ev.push(['fb', r2(p[0]), r2(p[1]), 0.2, r2(0.3 + A.fill / 1800), 0]);
       for (const e of this.ents) { const tk = e.tank; if (Math.hypot(tk.x - p[0], tk.y - p[1]) > 6) continue; const was = tk.destroyed; tk.lastHitBy = s.ent.slot;
         const rep = { mods: [], crew: [], res: null }; tk.heBlast([p[0], p[1], 0.15], A, [0, 0, 1], rep); if (rep.mods.length || rep.crew.length) this.afterHit(s, e, Object.assign(rep, { res: rep.res || 'non', plate: 'Explosão perto', eff: 0, pen: 0 }), was); }
       this.propBlast([p[0], p[1], 0.2], A); }
     this.endShell(s, p);
   }
-  // atravessa um objeto do mapa voxel por voxel; devolve true se o projétil parou
+  // atravessa um objeto do mapa voxel por voxel; devolve true se o projétil parou.
+  // O furo é feito em bolinhas ao longo do caminho; o servidor manda só os pontos e cada navegador fura igual.
   throughProp(s, pr, p0, dn, t0, t1) {
-    const A = s.A, rem = [], p = [0, 0, 0], tunnel = 0.2 + A.cal / 700; let last = -1, stopAt = null;
-    let pen = Math.max(0, SIM.penAt(A.def, s.dist + t0) - s.loss);
-    for (let t = t0; t <= Math.min(t1, t0 + 40); t += 0.1) {
+    const A = s.A, p = [0, 0, 0], RT = r3(0.2 + A.cal / 700), RL = r3(0.14 + A.cal / 900), RW = r3(Math.min(0.12, RT)), PT = [], PL = [], PW = [];
+    let last = -1, stopAt = null, pen = Math.max(0, SIM.penAt(A.def, s.dist + t0) - s.loss);
+    const hole = (list, r) => { const q = [r2(p[0]), r2(p[1]), r2(p[2])], n = list.length;
+      if (n && Math.abs(list[n - 3] - q[0]) + Math.abs(list[n - 2] - q[1]) + Math.abs(list[n - 1] - q[2]) < r * 0.6) return; list.push(q[0], q[1], q[2]); MAP.tunnel(pr, r, q); };
+    for (let t = t0; t <= Math.min(t1, t0 + 40); t += 0.05) {
       p[0] = p0[0] + dn[0] * t; p[1] = p0[1] + dn[1] * t; p[2] = p0[2] + dn[2] * t; if (p[2] < 0) break;
       const idx = MAP.propAt(pr, p[0], p[1], p[2]); if (idx < 0 || idx === last) continue; last = idx; const m = pr.mat[idx]; if (!m) continue;
-      if (MAP.SOFT[m]) { if (Math.random() < 0.35) { pr.mat[idx] = 0; rem.push(idx); } pen -= MAP.RES[m]; s.loss += MAP.RES[m]; if (pen <= 0) { stopAt = p.slice(); break; } continue; }
-      if (pr.kind === 'tree' && m === 2) { if (A.cal >= 50) this.fellTree(pr, dn[0], dn[1]); pen -= 12; s.loss += 12; this.ev.push(['sp', r2(p[0]), r2(p[1]), r2(p[2]), -r2(dn[0]), -r2(dn[1]), 0.3, 10, 0.8]); if (pen <= 0) stopAt = p.slice(); break; }
+      if (MAP.SOFT[m]) { hole(PL, RL); pen -= MAP.RES[m]; s.loss += MAP.RES[m]; if (pen <= 0) { stopAt = p.slice(); break; } continue; }
       if (A.t === 'HE' || A.t === 'HEAT') { stopAt = p.slice(); break; }
-      this.carve(pr, p, tunnel, rem); pen -= MAP.RES[m]; s.loss += MAP.RES[m];
+      // tronco: o perfurante só fura (quem derruba árvore é a explosão)
+      if (m === MAP.MAT.TRUNK && !pr.fallen) { hole(PW, RW); pen -= MAP.RES[m]; s.loss += MAP.RES[m]; this.ev.push(['sp', r2(p[0]), r2(p[1]), r2(p[2]), -r2(dn[0]), -r2(dn[1]), 0.3, 6, 0.6]); if (pen <= 0) { stopAt = p.slice(); break; } continue; }
+      hole(PT, RT); pen -= MAP.RES[m]; s.loss += MAP.RES[m];
       if (pen <= 0) { stopAt = p.slice(); break; }
     }
-    if (rem.length) { this.ev.push(['pr', pr.id, rem]); }
+    if (PL.length) this.ev.push(['pt', pr.id, RL, PL]);
+    if (PW.length) this.ev.push(['pt', pr.id, RW, PW]);
+    if (PT.length) this.ev.push(['pt', pr.id, RT, PT]);
     if (stopAt) {
       this.ev.push(['du', r2(stopAt[0]), r2(stopAt[1]), r2(stopAt[2]), 16], ['sp', r2(stopAt[0]), r2(stopAt[1]), r2(stopAt[2]), -r2(dn[0]), -r2(dn[1]), -r2(dn[2]), 18, 1]);
       if (A.t === 'HE' || A.fill > 300) { this.ev.push(['fb', r2(stopAt[0]), r2(stopAt[1]), r2(stopAt[2]), r2(0.3 + A.fill / 1800), 0]); this.propBlast(stopAt, A); }
       this.checkCollapse(pr); this.endShell(s, stopAt); return true; }
     this.checkCollapse(pr); return false;
   }
-  carve(pr, p, r, rem) { const P = MAP.PVS, i0 = Math.floor((p[0] - r - pr.x0) / P), i1 = Math.floor((p[0] + r - pr.x0) / P), j0 = Math.floor((p[1] - r - pr.y0) / P), j1 = Math.floor((p[1] + r - pr.y0) / P), k0 = Math.floor((p[2] - r) / P), k1 = Math.floor((p[2] + r) / P);
-    for (let k = Math.max(0, k0); k <= Math.min(pr.nz - 1, k1); k++) for (let j = Math.max(0, j0); j <= Math.min(pr.ny - 1, j1); j++) for (let i = Math.max(0, i0); i <= Math.min(pr.nx - 1, i1); i++) {
-      const idx = (k * pr.ny + j) * pr.nx + i; if (!pr.mat[idx]) continue;
-      const cx = pr.x0 + (i + .5) * P, cy = pr.y0 + (j + .5) * P, cz = (k + .5) * P; if (Math.hypot(cx - p[0], cy - p[1], cz - p[2]) > r) continue;
-      if (!MAP.SOFT[pr.mat[idx]]) pr.solid--; pr.mat[idx] = 0; rem.push(idx); } }
-  propBlast(p, A) {
-    const r = A.t === 'HE' ? 0.7 + Math.cbrt(A.fill) / 9 : A.fill > 300 ? 0.6 : 0; if (!r) return;
-    for (const id of MAP.propsAlong(this.map, p[0] - r, p[1] - r, p[0] + r, p[1] + r)) { const pr = this.map.props[id]; if (pr.gone) continue; const b = pr.bb;
+  propBlast(p, A, big) {
+    const r = r3(big ? 2.6 : A.t === 'HE' ? 0.7 + Math.cbrt(A.fill) / 9 : A.fill > 300 ? 0.6 : 0); if (!r) return;
+    const q = [r2(p[0]), r2(p[1]), r2(p[2])], fire = big || A.t === 'HE' || A.fill > 300;
+    for (const id of MAP.propsAlong(this.map, p[0] - r - 1, p[1] - r - 1, p[0] + r + 1, p[1] + r + 1)) { const pr = this.map.props[id]; if (pr.gone) continue; const b = pr.bb;
       if (p[0] < b[0] - r || p[0] > b[2] + r || p[1] < b[1] - r || p[1] > b[3] + r || p[2] > b[4] + r) continue;
-      if (pr.kind === 'tree' && Math.hypot(pr.cx - p[0], pr.cy - p[1]) < r + 0.3 && p[2] < 3) { this.fellTree(pr, pr.cx - p[0] || 1, pr.cy - p[1]); continue; }
-      const rem = []; this.carve(pr, p, r, rem); if (rem.length) { this.ev.push(['pr', pr.id, rem]); this.checkCollapse(pr); } } }
+      // a explosão perto do tronco derruba árvore e poste
+      if ((pr.kind === 'tree' || pr.kind === 'pole') && !pr.fallen && Math.hypot(pr.cx - p[0], pr.cy - p[1]) < r + 0.8 && p[2] < (pr.kind === 'pole' ? 7 : 4)) {
+        this.fellProp(pr, pr.cx - p[0] || 1, pr.cy - p[1]); continue; }
+      const rem = MAP.tunnel(pr, r, q); if (rem.length) { this.ev.push(['pt', pr.id, r, q]); this.checkCollapse(pr); }
+      if (fire && !pr.fire && !pr.gone) this.maybeIgnite(pr, q, r); } }
+  // ---------------------------------------------------------------- fogo no cenário
+  maybeIgnite(pr, q, r) {
+    if (!MAP.flammableNear(pr, q[0], q[1], q[2], r + 0.6)) return;
+    const chance = { hay: 0.9, house: 0.6, cart: 0.5, fence: 0.35, tree: 0.3, hedge: 0.25 }[pr.kind] || 0.2; if (Math.random() > chance) return;
+    const maxR = { hay: 2.6, house: 8, tree: 3.8, hedge: 3, cart: 2.5 }[pr.kind] || 2.2;
+    pr.fire = { x: q[0], y: q[1], z: q[2], r: 0.5, maxR, t: 0, next: 0.6, idle: 0, life: 22 + Math.random() * 12, seed: (Math.random() * 1e6) | 0, n: 0 };
+    this.fires.push(pr); this.ev.push(['pi', pr.id, q[0], q[1], q[2]]); }
+  stepFires(dt) {
+    for (const pr of this.fires) { const f = pr.fire; if (!f) continue; f.t += dt; if (f.t < f.next) continue; f.next += 1;
+      f.r = Math.min(f.maxR, r2(f.r + 0.5)); const seed = (f.seed + f.n++) | 0;
+      const rem = MAP.burn(pr, f.x, f.y, f.z, f.r, seed); this.ev.push(['pb', pr.id, f.x, f.y, f.z, f.r, seed]);
+      if (!rem.length && f.r >= f.maxR) f.idle++;
+      this.checkCollapse(pr);
+      if (f.t > f.life || f.idle >= 3) this.putOut(pr); }
+    this.fires = this.fires.filter(pr => pr.fire); }
+  putOut(pr) { if (!pr.fire) return; pr.fire = null; this.ev.push(['pf', pr.id]); }
   checkCollapse(pr) {
     if (pr.kind !== 'house' || pr.collapsed || pr.solid > pr.solid0 * 0.72) return;
-    pr.collapsed = true; const p = [0, 0, 0];
-    for (const idx of pr.list) { if (!pr.mat[idx]) continue; MAP.propCenter(pr, idx, p); if (p[2] > 1.1) pr.mat[idx] = 0; }
-    this.ev.push(['pc', pr.id]);
+    MAP.collapse(pr); this.ev.push(['pc', pr.id]);
   }
   // ---------------------------------------------------------------- visão
   visibility() {
@@ -268,6 +294,7 @@ class Match {
   // ---------------------------------------------------------------- regras dos modos
   onDestroyed(e, cause) {
     const s = e.slot; s.stats.deaths++;
+    if (cause === 'ammo') { const tk = e.tank; this.craters.push([tk.x, tk.y, 3.5]); this.ev.push(['cr', r2(tk.x), r2(tk.y), 2.6, 1]); this.propBlast([tk.x, tk.y, 1], null, true); }
     const killer = e.tank.lastHitBy && e.tank.lastHitBy.team !== e.team ? e.tank.lastHitBy : null;
     if (killer) killer.stats.kills++;
     const other = 1 - e.team;

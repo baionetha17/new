@@ -17,9 +17,12 @@ Não precisa de Radmin nem de servidor. Quem cria a sala hospeda a partida no pr
 - Dominação: zona no meio do mapa, renasce em 10 s, vence com 100 pontos.
 - Mata-mata infinito: renasce em 8 s, vence quem chegar ao número de abates.
 
+## Cenário destrutível
+Casas, árvores, muros, cercas, sebes, palheiros, carroças, caminhões abandonados, sacos de areia e postes são voxels de 10 cm, como os tanques. Tiro abre buraco, HE derruba árvore e poste, casa desaba e vira um monte de entulho que o tanque atravessa devagar, palha e feno pegam fogo, e HE deixa cratera que também freia o tanque. O mapa continua plano.
+
 ## Onde mexer
 - `shared/sim.js`: tanques (blindagem, módulos, munições, mobilidade) e balística.
-- `shared/map.js`: gerador de mapas (Kursk e Normandia).
+- `shared/map.js`: gerador de mapas (Kursk e Normandia), modelos dos objetos e as contas de destruição (servidor e navegadores fazem as mesmas).
 - `host/`: servidor da sala (salas, partida, IA), roda num Web Worker no navegador de quem hospeda.
 - `ui.js`: telas e a conexão PeerJS; `game.js`, `render.js`, `audio.js`: partida, desenho, HUD e som.
 - `vendor/peerjs.min.js`: PeerJS 1.5.4 (licença MIT em `vendor/peerjs-LICENSE`).

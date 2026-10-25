@@ -20,23 +20,23 @@ class View {
     // GBcss: tamanho do pixel do chão na tela (pixel art). Afastado, tanques e objetos são desenhados em pixel 1x1 (PX = 1)
     // e o chão em blocos de GBcss; de perto o voxel já é grande e tudo volta ao pixel do chão (setPX).
     this.GBcss = this.fixedPX || (w < 900 ? 2 : 3); this.PX = this.fixedPX || this.wantPX || 1; this.GB = Math.max(1, Math.round(this.GBcss / this.PX)); this.cv.width = w; this.cv.height = h;
-    const W = this.W = Math.ceil(w / this.PX), H = this.H = Math.ceil(h / this.PX);
+    const W = this.W = Math.ceil(w / this.PX / 4) * 4, H = this.H = Math.ceil(h / this.PX);   // largura múltipla de 4: o contorno pula 4 pixels vazios de uma vez
     this.off = document.createElement('canvas'); this.off.width = W; this.off.height = H; this.offc = this.off.getContext('2d');
     this.img = this.offc.createImageData(W, H); this.u32 = new Uint32Array(this.img.data.buffer);
-    this.zb = new Float32Array(W * H); this.idb = new Int32Array(W * H); this.shadow = new Uint8Array(W * H); return true; }
+    this.zb = new Float32Array(W * H); this.idb = new Int32Array(W * H); this.occ = new Uint8Array(W * H); this.occ32 = new Uint32Array(this.occ.buffer); this.shadow = new Uint8Array(W * H); this.shadow32 = null; return true; }
   setPX(px) { if (this.fixedPX || px === this.PX) return; this.wantPX = px; this.cw = 0; this.resize(); }
   proj(x, y, z, o) { const c = this.cam, X = x - c.x - c.ox, Y = y - c.y - c.oy; o[0] = this.W / 2 + X * c.S; o[1] = this.H / 2 - (Y * SA + z * CA) * c.S; o[2] = Y * CA - z * SA; return o; }
   unproj(sx, sy) { const c = this.cam; return [(sx - this.W / 2) / c.S + c.x + c.ox, -(sy - this.H / 2) / (c.S * SA) + c.y + c.oy, 0]; }
-  clear(col) { this.u32.fill(col); this.zb.fill(Infinity); this.idb.fill(0); }
+  clear(col) { this.u32.fill(col); this.zb.fill(Infinity); this.idb.fill(0); this.occ.fill(0); }
   // chão a partir da textura do mapa
   ground(T) { const { W, H, u32, cam } = this, S = cam.S, cx = cam.x + cam.ox, cy = cam.y + cam.oy, res = T.res, tw = T.w, th = T.h, out = T.out, data = T.data;
     const B = this.GB, step = res / S * B, tx0 = ((B / 2 - W / 2) / S + cx - T.x0) * res;
     for (let y = 0; y < H; y += B) { const wy = -(y + B / 2 - H / 2) / (S * SA) + cy, ty = Math.floor((wy - T.y0) * res), row = y * W, yEnd = Math.min(H, y + B);
       if (ty < 0 || ty >= th) { u32.fill(out, row, yEnd * W); continue; }
       const base = ty * tw; let tx = tx0;
-      for (let x = 0; x < W; x += B, tx += step) { const ix = tx | 0; u32.fill((tx < 0 || ix >= tw) ? out : data[base + ix], row + x, row + Math.min(W, x + B)); }
+      for (let x = 0; x < W; x += B, tx += step) { const ix = tx | 0, v = (tx < 0 || ix >= tw) ? out : data[base + ix], e = Math.min(W, x + B); for (let q = row + x; q < row + e; q++) u32[q] = v; }
       for (let yy = y + 1; yy < yEnd; yy++) u32.copyWithin(yy * W, row, row + W); }
-    this.zb.fill(Infinity); this.idb.fill(0); }
+    this.zb.fill(Infinity); this.idb.fill(0); this.occ.fill(0); }
   // anel da zona de captura desenhado no chão
   groundRing(x, y, r, col, a) { const P = [0, 0, 0]; const n = Math.max(64, Math.round(r * this.cam.S * 4));
     for (let i = 0; i < n; i++) { const t = i / n * Math.PI * 2; this.proj(x + Math.cos(t) * r, y + Math.sin(t) * r, 0, P); this.plot(P[0], P[1], col[0], col[1], col[2], a, false); if (i % 2) this.plot(P[0], P[1] + 1, col[0], col[1], col[2], a * 0.6, false); } }
@@ -46,12 +46,13 @@ class View {
       const wx = o[0] + R[0] * lx + R[1] * ly + R[2] * lz, wy = o[1] + R[3] * lx + R[4] * ly + R[5] * lz, wz = o[2] + R[6] * lx + R[7] * ly + R[8] * lz; if (wz < 0.02) continue;
       this.proj(wx + KX * wz, wy + KY * wz, 0, P); const x0 = (P[0] - hs) | 0, y0 = (P[1] - hs) | 0;
       for (let yy = y0; yy < y0 + s; yy++) { if (yy < 0 || yy >= H) continue; for (let xx = x0; xx < x0 + s; xx++) { if (xx < 0 || xx >= W) continue; sh[yy * W + xx] = 1; } } } }
-  applyShadow() { const u = this.u32, sh = this.shadow; for (let i = 0; i < u.length; i++) { if (!sh[i]) continue; const c = u[i]; u[i] = pack((c & 255) * 0.55, ((c >> 8) & 255) * 0.58, ((c >> 16) & 255) * 0.62); sh[i] = 0; } }
+  applyShadow() { const u = this.u32, sh = this.shadow, s32 = this.shadow32 || (this.shadow32 = new Uint32Array(sh.buffer, 0, sh.length >> 2));
+    for (let q = 0; q < s32.length; q++) { if (!s32[q]) continue; for (let i = q * 4; i < q * 4 + 4; i++) { if (!sh[i]) continue; const c = u[i]; u[i] = pack((c & 255) * 0.55, ((c >> 8) & 255) * 0.58, ((c >> 16) & 255) * 0.62); } s32[q] = 0; } }
   // voxels de um tanque. mode: ext | cut (sem teto, mostra tripulação e módulos)
   splatGrid(tank, g, T, code, mode) {
-    const R = T.R, o = T.o, pv = T.p, cam = this.cam, s = Math.max(1, Math.ceil(VS * cam.S * 1.08)), hs = s / 2, W = this.W, H = this.H, S = cam.S;
+    const R = T.R, o = T.o, pv = T.p, cam = this.cam, s = Math.max(1, Math.ceil(VS * cam.S * 1.08)), hs = s / 2, sv = Math.max(1, Math.ceil(VS * cam.S * (SA + CA) * 1.02)), hv = sv / 2, W = this.W, H = this.H, S = cam.S;
     const L0 = LIGHT[0], L1 = LIGHT[1], L2 = LIGHT[2], cut = mode === 'cut', MOD = tank.MOD, cx = cam.x + cam.ox, cy = cam.y + cam.oy;
-    const zb = this.zb, u32 = this.u32, idb = this.idb;
+    const zb = this.zb, u32 = this.u32, idb = this.idb, occ = this.occ;
     for (let a = 0; a < g.list.length; a++) { const idx = g.list[a]; const mat = g.mat[idx]; if (!mat) continue;
       const pl = g.plate[idx];
       if (cut && (pl === 7 || pl === 20 || pl === 15 || pl === 18 || (pl === 16 && g.cz[a] > 2.42) || pl === 19)) continue;
@@ -68,28 +69,55 @@ class View {
       r *= sh; gg *= sh; b *= sh;
       const ht = g.heat[idx]; if (ht > 0) { r += 255 * ht; gg += 120 * ht * ht; b += 30 * ht * ht * ht; }
       const col = pack(r > 255 ? 255 : r, gg > 255 ? 255 : gg, b > 255 ? 255 : b), id = ((code << 20) | idx) + 1;
-      const x0 = (sx - hs) | 0, y0 = (sy - hs) | 0;
-      for (let yy = y0; yy < y0 + s; yy++) { if (yy < 0 || yy >= H) continue; const row = yy * W; for (let xx = x0; xx < x0 + s; xx++) { if (xx < 0 || xx >= W) continue; const p = row + xx;
-        if (d < zb[p]) { zb[p] = d; u32[p] = col; idb[p] = id; } } } } }
+      const x0 = (sx - hs) | 0, y0 = (sy - hv) | 0;
+      for (let yy = y0; yy < y0 + sv; yy++) { if (yy < 0 || yy >= H) continue; const row = yy * W; for (let xx = x0; xx < x0 + s; xx++) { if (xx < 0 || xx >= W) continue; const p = row + xx;
+        if (d < zb[p]) { zb[p] = d; u32[p] = col; idb[p] = id; occ[p] = 1; } } } } }
   splatTank(tank, code, mode) { tank.update(); this.splatGrid(tank, tank.GH, tank.TH, code * 2, mode); this.splatGrid(tank, tank.GT, tank.TT, code * 2 + 1, mode); }
   tankOnScreen(tank, m) { const P = this.proj(tank.TH.o[0], tank.TH.o[1], 1, [0, 0, 0]); const r = (m || 7) * this.cam.S; return P[0] > -r && P[0] < this.W + r && P[1] > -r && P[1] < this.H + r; }
-  // voxels de um objeto do mapa (casa, árvore...)
+  // voxels de um objeto do mapa (casa, árvore...): só os que têm face para a câmera (de cima ou do sul)
   splatProp(pr, code) {
     const b = pr.bb, cam = this.cam, S = cam.S, W = this.W, H = this.H, P = [0, 0, 0];
     this.proj(b[0], b[3], 0, P); const sx0 = P[0]; this.proj(b[2], b[1], 0, P); const sx1 = P[0], syb = P[1]; this.proj(b[0], b[3], b[4], P); const syt = P[1];
     if (sx1 < 0 || sx0 > W || syb < 0 || syt > H) return;
-    const s = Math.max(1, Math.ceil(PVS * S * 1.06)), hs = s / 2, cx = cam.x + cam.ox, cy = cam.y + cam.oy, zb = this.zb, u32 = this.u32, idb = this.idb;
-    const L = pr.list, px = pr.px, py = pr.py, pz = pr.pz, shd = pr.shd, mat = pr.mat, base = (code << 20) + 1;
-    for (let a = 0; a < L.length; a++) { const idx = L[a]; if (!mat[idx]) continue;
-      const X = px[a] - cx, Y = py[a] - cy, z = pz[a]; const sx = W / 2 + X * S, sy = H / 2 - (Y * SA + z * CA) * S, d = Y * CA - z * SA;
+    // longe, cada voxel tem menos de um pixel: desenha um voxel de cada bloco 2x2x2, no dobro do tamanho
+    const R = pr.R, lod = PVS * S < 0.7, VZ = lod ? PVS * 2 : PVS, s = Math.max(1, Math.ceil(VZ * S * 1.06)), hs = s / 2, sv = Math.max(1, Math.ceil(VZ * S * (SA + CA) * 1.02)), hv = sv / 2, ox = pr.x0 - cam.x - cam.ox, oy = pr.y0 - cam.y - cam.oy, zb = this.zb, u32 = this.u32, idb = this.idb, occ = this.occ;
+    const L = pr.list, lx = R.lx, ly = R.ly, lz = R.lz, shd = R.shd, vis = lod ? R.lod : R.vis, mat = pr.mat, cr = pr.cr, cg = pr.cg, cb = pr.cb, base = (code << 20) + 1;
+    for (let q = 0; q < vis.length; q++) { const a = vis[q], idx = L[a]; if (!mat[idx]) continue;
+      const X = ox + lx[a], Y = oy + ly[a], z = lz[a]; const sx = W / 2 + X * S, sy = H / 2 - (Y * SA + z * CA) * S, d = Y * CA - z * SA;
       if (sx < -s || sy < -s || sx > W + s || sy > H + s) continue;
-      const sh = shd[a] / 100; const col = pack(Math.min(255, pr.cr[idx] * sh), Math.min(255, pr.cg[idx] * sh), Math.min(255, pr.cb[idx] * sh)); const id = base + idx;
-      const x0 = (sx - hs) | 0, y0 = (sy - hs) | 0;
+      const sh = shd[a] / 100; let r = cr[idx] * sh, g = cg[idx] * sh, bl = cb[idx] * sh; const col = pack(r > 255 ? 255 : r, g > 255 ? 255 : g, bl > 255 ? 255 : bl), id = base + idx;
+      const x0 = (sx - hs) | 0, y0 = (sy - hv) | 0;
+      if (s === 1 && sv === 1) { if (x0 >= 0 && y0 >= 0 && x0 < W && y0 < H) { const p = y0 * W + x0; if (d < zb[p]) { zb[p] = d; u32[p] = col; idb[p] = id; occ[p] = 1; } } continue; }
+      for (let yy = y0; yy < y0 + sv; yy++) { if (yy < 0 || yy >= H) continue; const row = yy * W; for (let xx = x0; xx < x0 + s; xx++) { if (xx < 0 || xx >= W) continue; const p = row + xx;
+        if (d < zb[p]) { zb[p] = d; u32[p] = col; idb[p] = id; occ[p] = 1; } } } } }
+  // árvore caindo: gira os voxels em volta do pé até deitar (só desenho; a árvore deitada já existe no mapa)
+  splatFalling(f, code, u) {
+    const cam = this.cam, S = cam.S, W = this.W, H = this.H, s = Math.max(1, Math.ceil(PVS * S * 1.1)), hs = s / 2, sv = Math.max(1, Math.ceil(PVS * S * (SA + CA) * 1.05)), zb = this.zb, u32 = this.u32, idb = this.idb, occ = this.occ;
+    const ang = u * u * Math.PI / 2, c = Math.cos(ang), sn = Math.sin(ang), ux = f.ux, uy = f.uy, ccx = f.cx - cam.x - cam.ox, ccy = f.cy - cam.y - cam.oy;
+    for (let q = 0; q < f.n; q++) { const sa = f.sa[q], ta = f.ta[q], z = f.z[q];
+      const na = sa * c + z * sn, nz = z * c - sa * sn; if (nz < -0.3) continue;
+      const X = ccx + ux * na - uy * ta, Y = ccy + uy * na + ux * ta, Z = Math.max(0.05, nz);
+      const sx = W / 2 + X * S, sy = H / 2 - (Y * SA + Z * CA) * S, d = Y * CA - Z * SA; if (sx < -s || sy < -s || sx > W + s || sy > H + s) continue;
+      const x0 = (sx - hs) | 0, y0 = (sy - sv / 2) | 0, col = f.col[q];
+      for (let yy = y0; yy < y0 + sv; yy++) { if (yy < 0 || yy >= H) continue; const row = yy * W; for (let xx = x0; xx < x0 + s; xx++) { if (xx < 0 || xx >= W) continue; const p = row + xx;
+        if (d < zb[p]) { zb[p] = d; u32[p] = col; idb[p] = 0; occ[p] = 1; } } } } }
+  // pedaços que caíram e ficaram no chão
+  drawLitter() { const Lt = this.litter; if (!Lt || !Lt.n) return; const cam = this.cam, S = cam.S, W = this.W, H = this.H, zb = this.zb, u32 = this.u32, occ = this.occ, cx = cam.x + cam.ox, cy = cam.y + cam.oy;
+    const n = Math.min(Lt.n, Lt.cap), ps = Lt.pos, cs = Lt.col, sz = Lt.sz;
+    for (let q = 0; q < n; q++) { const X = ps[q * 3] - cx, Y = ps[q * 3 + 1] - cy, z = ps[q * 3 + 2]; const sx = W / 2 + X * S, sy = H / 2 - (Y * SA + z * CA) * S; if (sx < -4 || sy < -4 || sx > W + 4 || sy > H + 4) continue;
+      const s = Math.max(1, Math.ceil(VS * S * sz[q])), d = Y * CA - z * SA, x0 = (sx - s / 2) | 0, y0 = (sy - s / 2) | 0, col = cs[q];
       for (let yy = y0; yy < y0 + s; yy++) { if (yy < 0 || yy >= H) continue; const row = yy * W; for (let xx = x0; xx < x0 + s; xx++) { if (xx < 0 || xx >= W) continue; const p = row + xx;
-        if (d < zb[p]) { zb[p] = d; u32[p] = col; idb[p] = id; } } } } }
-  outline() { const { W, H, zb, u32 } = this; for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) { const p = y * W + x; const z = zb[p];
-    if (z === Infinity) { if (zb[p - 1] !== Infinity || zb[p + 1] !== Infinity || zb[p - W] !== Infinity || zb[p + W] !== Infinity) { const c = u32[p]; u32[p] = pack((c & 255) * 0.55, ((c >> 8) & 255) * 0.55, ((c >> 16) & 255) * 0.55); } continue; }
-    if (zb[p - W] - z > 0.35 || zb[p - 1] - z > 0.35) { const c = u32[p]; u32[p] = pack((c & 255) * 0.62, ((c >> 8) & 255) * 0.62, ((c >> 16) & 255) * 0.62); } } }
+        if (d < zb[p]) { zb[p] = d; u32[p] = col; occ[p] = 1; } } } } }
+  addLitter(x, y, z, col, sz) { let Lt = this.litter; if (!Lt) Lt = this.litter = { cap: 60000, n: 0, pos: new Float32Array(180000), col: new Uint32Array(60000), sz: new Float32Array(60000) };
+    const q = Lt.n % Lt.cap; Lt.pos[q * 3] = x; Lt.pos[q * 3 + 1] = y; Lt.pos[q * 3 + 2] = z; Lt.col[q] = pack(col[0], col[1], col[2]); Lt.sz[q] = sz; Lt.n++; }
+  // contorno escuro: em volta dos objetos e onde a profundidade salta (blocos de 4 pixels sem objeto por perto são pulados)
+  outline() { const { W, H, zb, u32, occ, occ32 } = this, Wq = W >> 2;
+    for (let y = 1; y < H - 1; y++) { const q0 = y * Wq, q1 = q0 + Wq;
+      for (let q = q0; q < q1; q++) { if (!(occ32[q] | occ32[q - 1] | occ32[q + 1] | occ32[q - Wq] | occ32[q + Wq])) continue;
+        const pe = Math.min(q * 4 + 4, y * W + W - 1);
+        for (let p = Math.max(q * 4, y * W + 1); p < pe; p++) {
+          if (!occ[p]) { if (!(occ[p - 1] | occ[p + 1] | occ[p - W] | occ[p + W])) continue; const c = u32[p]; u32[p] = (c & 0xFF000000) | ((((c >> 16) & 255) * 0.55) << 16) | ((((c >> 8) & 255) * 0.55) << 8) | ((c & 255) * 0.55); continue; }
+          const z = zb[p]; if (zb[p - W] - z > 0.35 || zb[p - 1] - z > 0.35) { const c = u32[p]; u32[p] = (c & 0xFF000000) | ((((c >> 16) & 255) * 0.62) << 16) | ((((c >> 8) & 255) * 0.62) << 8) | ((c & 255) * 0.62); } } } } }
   plot(x, y, r, g, b, a, add) { x |= 0; y |= 0; if (x < 0 || y < 0 || x >= this.W || y >= this.H) return; const p = y * this.W + x, c = this.u32[p];
     if (add) this.u32[p] = pack(Math.min(255, (c & 255) + r * a), Math.min(255, ((c >> 8) & 255) + g * a), Math.min(255, ((c >> 16) & 255) + b * a));
     else this.u32[p] = pack((c & 255) * (1 - a) + r * a, ((c >> 8) & 255) * (1 - a) + g * a, ((c >> 16) & 255) * (1 - a) + b * a); }
@@ -106,7 +134,8 @@ class View {
     P.push({ k: 4, x: p[0], y: p[1], z: p[2], life: 0.12, max: 0.12, r: 0.5 }); }
   debris(p, n, col, cnt) { for (let i = 0; i < cnt; i++) { const d = nrm([n[0] + (rnd() - .5), n[1] + (rnd() - .5), n[2] + rnd() * 0.8]); const v = 1.5 + rnd() * 4;
     this.particles.push({ k: 3, x: p[0], y: p[1], z: p[2], vx: d[0] * v, vy: d[1] * v, vz: d[2] * v + 1.5, life: 3 + rnd() * 4, col, sz: 0.5 }); } }
-  chunk(w, col, sp, sz) { sp = sp || 1; this.particles.push({ k: 3, x: w[0], y: w[1], z: w[2], vx: (rnd() - .5) * 3 * sp, vy: (rnd() - .5) * 3 * sp, vz: (1 + rnd() * 3) * sp, life: 6 + rnd() * 6, col, sz: sz || 1 }); }
+  // keep: o pedaço fica no chão para sempre (vira lixo do mapa) em vez de sumir
+  chunk(w, col, sp, sz, keep) { sp = sp || 1; this.particles.push({ k: 3, x: w[0], y: w[1], z: w[2], vx: (rnd() - .5) * 3 * sp, vy: (rnd() - .5) * 3 * sp, vz: (1 + rnd() * 3) * sp, life: keep ? 30 : 6 + rnd() * 6, col, sz: sz || 1, keep }); }
   dust(p, c, col) { for (let i = 0; i < c; i++) this.particles.push({ k: 2, x: p[0] + (rnd() - .5) * .3, y: p[1] + (rnd() - .5) * .3, z: Math.max(0.1, p[2] || 0), vx: (rnd() - .5) * 2, vy: (rnd() - .5) * 2, vz: 0.5 + rnd() * 1.5, life: 1.5 + rnd() * 2, max: 3.5, r0: 0.15, r1: 0.9, col: col || [120, 108, 80] }); }
   fireball(p, s, big) { const P = this.particles;
     P.push({ k: 4, x: p[0], y: p[1], z: p[2], life: 0.18 + s * 0.12, max: 0.18 + s * 0.12, r: 1.2 * s + 0.5 });
@@ -126,7 +155,8 @@ class View {
       if (q.k === 0) { q.px = q.x; q.py = q.y; q.pz = q.z; q.vz -= G * dt * 0.8; q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; if (q.z < 0) { q.z = 0; q.vz *= -0.35; q.vx *= 0.6; q.vy *= 0.6; } }
       else if (q.k === 1) { const dr = Math.exp(-(q.drag || 1.2) * dt); q.vx = q.vx * dr + wind[0] * dt; q.vy = q.vy * dr + wind[1] * dt; q.vz = q.vz * dr + 3.2 * dt; q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; }
       else if (q.k === 2) { q.vx = q.vx * 0.98 + wind[0] * dt; q.vy = q.vy * 0.98 + wind[1] * dt; q.vz *= 0.995; q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; }
-      else if (q.k === 3) { if (!q.rest) { q.vz -= G * dt; q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; if (q.z < 0.05) { q.z = 0.05; q.vz *= -0.3; q.vx *= 0.5; q.vy *= 0.5; if (Math.abs(q.vz) < 0.6) q.rest = true; } } } }
+      else if (q.k === 3) { if (!q.rest) { q.vz -= G * dt; q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; if (q.z < 0.05) { q.z = 0.05; q.vz *= -0.3; q.vx *= 0.5; q.vy *= 0.5; if (Math.abs(q.vz) < 0.6) q.rest = true; } }
+        if (q.rest && q.keep) { this.addLitter(q.x, q.y, 0.05 * (q.sz || 1), q.col, q.sz || 1); P[i] = P[P.length - 1]; P.pop(); } } }
     if (P.length > 7000) P.splice(0, P.length - 7000); }
   drawParticles() { const cam = this.cam, sc = cam.S / 30, P = [0, 0, 0], Q = [0, 0, 0], W = this.W, H = this.H, zb = this.zb;
     for (const q of this.particles) { if (q.k !== 2) continue; this.proj(q.x, q.y, q.z, P); const age = 1 - q.life / q.max; const R = (q.r0 + (q.r1 - q.r0) * age) * cam.S; const a = 0.3 * (1 - age) * Math.min(1, age * 6 + 0.2);
@@ -179,7 +209,7 @@ function buildGround(M) {
   // borda do mapa escurecida
   for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) { const e = Math.min(i, j, w - 1 - i, h - 1 - j) / res; if (e > 8) continue; const c = base[j * w + i], k = 0.55 + 0.45 * e / 8;
     base[j * w + i] = pack((c & 255) * k, ((c >> 8) & 255) * k, ((c >> 16) & 255) * k); }
-  for (const pr of M.props) stampShadow(T, pr, 1);
+  for (const pr of M.props) { stampShadow(T, pr, 1); pr._sb = shadowBox(pr); }
   composite(T, 0, 0, w, h);
   return T;
 }
@@ -191,7 +221,7 @@ function stampShadow(T, pr, v) { if (pr.gone) return; const { res, w, h, x0, y0,
     if (i < 0 || j < 0 || i >= w - 1 || j >= h - 1) continue; const p = j * w + i; shade[p] = v; shade[p + 1] = v; if (pr.kind !== 'tree') shade[p + w] = v; } }
 function shadowBox(pr) { const b = pr.bb, z = b[4]; return [Math.min(b[0], b[0] + KX * z) - 1, Math.min(b[1], b[1] + KY * z) - 1, Math.max(b[2], b[2] + KX * z) + 1, Math.max(b[3], b[3] + KY * z) + 1]; }
 // refaz as sombras numa região depois que um objeto mudou
-function reshadow(T, pr) { const M = T.M, sb = shadowBox(pr), { res, w, x0, y0 } = T;
+function reshadow(T, pr) { const M = T.M, nb = shadowBox(pr), ob = pr._sb || nb, sb = [Math.min(nb[0], ob[0]), Math.min(nb[1], ob[1]), Math.max(nb[2], ob[2]), Math.max(nb[3], ob[3])], { res, w, x0, y0 } = T; pr._sb = nb;
   const i0 = Math.floor((sb[0] - x0) * res), i1 = Math.ceil((sb[2] - x0) * res), j0 = Math.floor((sb[1] - y0) * res), j1 = Math.ceil((sb[3] - y0) * res);
   for (let j = Math.max(0, j0); j < Math.min(T.h, j1); j++) T.shade.fill(0, j * w + Math.max(0, i0), j * w + Math.min(w, i1));
   for (const id of MAPGEN.propsAlong(M, sb[0] - 12, sb[1] - 12, sb[2] + 12, sb[3] + 12)) { const o = M.props[id]; const ob = shadowBox(o); if (ob[0] > sb[2] || ob[2] < sb[0] || ob[1] > sb[3] || ob[3] < sb[1]) continue; stampShadow(T, o, 1); }
@@ -209,15 +239,27 @@ function stampCrater(T, x, y, r) { const step = 1 / T.res;
     if (d < r) paint(T, x + dx, y + dy, [44, 36, 28], 0.55 * (1 - d / r) + 0.25); else if (d < r * 1.35) paint(T, x + dx, y + dy, [126, 108, 82], 0.3); } }
 function stampScorch(T, x, y, r) { const step = 1 / T.res; for (let dy = -r; dy <= r; dy += step) for (let dx = -r; dx <= r; dx += step) { const d = Math.hypot(dx, dy) / r * (0.7 + 0.5 * hash(Math.round(dx * 5), Math.round(dy * 5))); if (d < 1) paint(T, x + dx, y + dy, [26, 22, 20], 0.6 * (1 - d)); } }
 
-// dados de desenho de cada objeto: centros e sombreamento por voxel
-function prepProp(pr) { const n = pr.list.length; pr.px = new Float32Array(n); pr.py = new Float32Array(n); pr.pz = new Float32Array(n); pr.shd = new Uint8Array(n); const P = [0, 0, 0];
-  for (let a = 0; a < n; a++) { MAPGEN.propCenter(pr, pr.list[a], P); pr.px[a] = P[0]; pr.py[a] = P[1]; pr.pz[a] = P[2]; }
+// dados de desenho de cada objeto: posição local, sombreamento e lista de voxels que aparecem para a câmera.
+// Árvores iguais dividem esses dados até alguém mexer nelas.
+function prepProp(pr) { const t = pr.tpl;
+  if (t && pr.shared && t.R && t.R.ver === pr.ver) { pr.R = t.R; return; }
+  const n = pr.list.length, lx = new Float32Array(n), ly = new Float32Array(n), lz = new Float32Array(n), nx = pr.nx, ny = pr.ny;
+  for (let a = 0; a < n; a++) { const idx = pr.list[a], i = idx % nx, q = (idx / nx) | 0, j = q % ny, k = (q / ny) | 0; lx[a] = (i + .5) * PVS; ly[a] = (j + .5) * PVS; lz[a] = (k + .5) * PVS; }
+  pr.R = { lx, ly, lz, shd: new Uint8Array(n), vis: null, ver: pr.ver }; shadeProp(pr);
+  if (t && pr.shared) t.R = pr.R; }
+// depois de um furo: recalcula luz e o que ficou exposto (a grade é a mesma; se mudou de forma, monta tudo de novo)
+function refreshProp(pr) { if (!pr.R || pr.R.ver !== pr.ver) { prepPropOwn(pr); return; }
+  if (pr.tpl && pr.R === pr.tpl.R) pr.R = { lx: pr.R.lx, ly: pr.R.ly, lz: pr.R.lz, shd: new Uint8Array(pr.list.length), vis: null, ver: pr.ver };
   shadeProp(pr); }
-function shadeProp(pr) { const { nx, ny, nz, mat, list } = pr, nxy = nx * ny;
+function prepPropOwn(pr) { const tpl = pr.tpl; pr.tpl = null; prepProp(pr); pr.tpl = tpl; }
+function shadeProp(pr) { const { nx, ny, nz, mat, list } = pr, nxy = nx * ny, shd = pr.R.shd, vis = [], lod = [], nx2 = (nx + 1) >> 1, ny2 = (ny + 1) >> 1, seen = new Uint8Array(nx2 * ny2 * ((nz + 1) >> 1));
   for (let a = 0; a < list.length; a++) { const idx = list[a]; if (!mat[idx]) continue; const i = idx % nx, t = (idx / nx) | 0, j = t % ny, k = (t / ny) | 0;
-    let x = 0, y = 0, z = 0; if (i + 1 >= nx || !mat[idx + 1]) x++; if (i - 1 < 0 || !mat[idx - 1]) x--; if (j + 1 >= ny || !mat[idx + nx]) y++; if (j - 1 < 0 || !mat[idx - nx]) y--; if (k + 1 >= nz || !mat[idx + nxy]) z++; if (k - 1 >= 0 && !mat[idx - nxy]) z--;
+    const up = k + 1 >= nz || !mat[idx + nxy], south = j - 1 < 0 || !mat[idx - nx];
+    let x = 0, y = 0, z = 0; if (i + 1 >= nx || !mat[idx + 1]) x++; if (i - 1 < 0 || !mat[idx - 1]) x--; if (j + 1 >= ny || !mat[idx + nx]) y++; if (south) y--; if (up) z++; if (k - 1 >= 0 && !mat[idx - nxy]) z--;
+    if (up || south) { vis.push(a); const c = ((k >> 1) * ny2 + (j >> 1)) * nx2 + (i >> 1); if (!seen[c]) { seen[c] = 1; lod.push(a); } }
     if (!x && !y && !z) z = 1; const l = Math.hypot(x, y, z); x /= l; y /= l; z /= l;
-    const sh = 0.5 + 0.62 * Math.max(0, x * LIGHT[0] + y * LIGHT[1] + z * LIGHT[2]) + 0.08 * z; pr.shd[a] = Math.round(sh * 100); } }
+    const sh = 0.5 + 0.62 * Math.max(0, x * LIGHT[0] + y * LIGHT[1] + z * LIGHT[2]) + 0.08 * z; shd[a] = Math.round(sh * 100); }
+  pr.R.vis = Int32Array.from(vis); pr.R.lod = Int32Array.from(lod); }
 
-return { View, buildGround, composite, reshadow, stampTracks, stampCrater, stampScorch, paint, prepProp, shadeProp, SA, CA, LIGHT, pack, fireCol };
+return { View, buildGround, composite, reshadow, stampTracks, stampCrater, stampScorch, paint, prepProp, refreshProp, shadeProp, SA, CA, LIGHT, pack, fireCol };
 })();

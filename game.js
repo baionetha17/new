@@ -18,7 +18,7 @@ function start(msg, send, exitFn) {
   st = { msg, M, T, view: new RENDER.View(cv), tanks: new Map(), ciNext: 0, byCi: [], mySlot: msg.slot, team: msg.team, mode: msg.mode, names: msg.names || {},
     slots: Object.fromEntries(msg.tanks.map(t => [t.id, t])), me: null, myEnt: null, g: null, shells: new Map(), tracers: [], heat: new Set(),
     mouse: { x: 0, y: 0, in: false }, keys: {}, rmb: false, camOff: [0, 0], fireN: 0, repN: 0, sel: 0, aim: [0, 0, 0], hover: null, hoverT: 0,
-    offset: null, lastSnap: 0, feed: [], shake: 0, paused: false, spec: null, last: performance.now(), hudT: 0, mmT: 0, reloadLocal: 0, seenAt: new Map(), loadedPrev: null };
+    offset: null, lastSnap: 0, feed: [], shake: 0, paused: false, spec: null, last: performance.now(), hudT: 0, mmT: 0, reloadLocal: 0, seenAt: new Map(), loadedPrev: null, dirty: [], falling: [] };
   st.zoom = 64 / 6.6 * st.view.GBcss; st.view.cam.S = st.zoom / st.view.PX;   // zoom em pixels de tela por metro
   st.mm = buildMinimapBase(M, T);
   $('#hudMode').textContent = msg.modeName + ' · ' + MAPGEN.THEMES[msg.map].short;
@@ -51,6 +51,26 @@ function onSnap(m) {
 function tankOf(id) { return st.tanks.get(id); }
 function myTank() { return st.myEnt ? st.tanks.get(st.myEnt) : null; }
 function distTo(p) { const c = st.view.cam; return Math.hypot(p[0] - c.x, p[1] - c.y); }
+// pedaços que voam quando um objeto perde voxels (frac: parte dos voxels que vira pedaço; keep: ficam no chão)
+function propBits(pr, rem, sp, frac, keep) { if (!rem.length) return; const V = st.view, P = [0, 0, 0], n = Math.min(160, Math.ceil(rem.length * frac) + 6);
+  for (let q = 0; q < n; q++) { const idx = rem[(Math.random() * rem.length) | 0]; MAPGEN.propCenter(pr, idx, P); const k = 0.72 + Math.random() * 0.2;
+    V.chunk(P.slice(), [pr.cr[idx] * k, pr.cg[idx] * k, pr.cb[idx] * k], sp * (0.4 + Math.random() * 0.6), 1 + Math.random() * 1.5, keep || Math.random() < 0.5); } }
+function markDirty(pr) { if (!pr.dirty) { pr.dirty = true; st.dirty.push(pr); } }
+// árvore caindo: guarda os voxels de pé para animar a queda
+function startFall(pr, dir) { if (!pr.R) RENDER.prepProp(pr); const ux = [1, 0, -1, 0][dir], uy = [0, 1, 0, -1][dir], R = pr.R, vis = R.vis, sa = [], ta = [], z = [], col = [], tr = pr.trunkR || 0.15;
+  for (let q = 0; q < vis.length; q++) { const a = vis[q], idx = pr.list[a]; if (!pr.mat[idx]) continue; const x = pr.x0 + R.lx[a] - pr.cx, y = pr.y0 + R.ly[a] - pr.cy;
+    if (R.lz[a] < 0.4 && Math.hypot(x, y) < tr + 0.08) continue;
+    sa.push(x * ux + y * uy); ta.push(-x * uy + y * ux); z.push(R.lz[a]); const sh = R.shd[a] / 100; col.push(RENDER.pack(Math.min(255, pr.cr[idx] * sh), Math.min(255, pr.cg[idx] * sh), Math.min(255, pr.cb[idx] * sh))); }
+  pr.falling = true; st.falling.push({ pr, ux, uy, cx: pr.cx, cy: pr.cy, sa: Float32Array.from(sa), ta: Float32Array.from(ta), z: Float32Array.from(z), col: Uint32Array.from(col), n: sa.length, t: 0, dur: 1.1 + Math.min(1, pr.bb[4] / 10) }); }
+// fogo: pontos inflamáveis perto da frente de chamas, de onde saem chamas e fumaça
+function firePoints(pr) { const f = pr.fire; if (!f) return; const P = [0, 0, 0], pts = [], R = pr.R, r2 = (f.r + 0.6) * (f.r + 0.6), r1 = Math.max(0, f.r - 1.2) ** 2;
+  if (!R) return; for (let q = 0; q < R.vis.length && pts.length < 600; q++) { const a = R.vis[q], idx = pr.list[a], m = pr.mat[idx]; if (!m || !MAPGEN.BURN[m]) continue;
+    const dx = pr.x0 + R.lx[a] - f.x, dy = pr.y0 + R.ly[a] - f.y, dz = R.lz[a] - f.z, d2 = dx * dx + dy * dy + dz * dz; if (d2 > r2 || d2 < r1) continue; pts.push(pr.x0 + R.lx[a], pr.y0 + R.ly[a], R.lz[a]); }
+  f.pts = pts; }
+// escurece o que o fogo lambeu
+function char(pr, x, y, z, r) { MAPGEN.ownColors(pr); const P = [0, 0, 0], r2 = r * r;
+  for (const idx of pr.list) { if (!pr.mat[idx]) continue; MAPGEN.propCenter(pr, idx, P); const dx = P[0] - x, dy = P[1] - y, dz = P[2] - z; if (dx * dx + dy * dy + dz * dz > r2) continue;
+    pr.cr[idx] = Math.max(22, pr.cr[idx] * 0.86); pr.cg[idx] = Math.max(20, pr.cg[idx] * 0.84); pr.cb[idx] = Math.max(18, pr.cb[idx] * 0.84); } }
 function handleEv(e) {
   const V = st.view, T = st.T, M = st.M;
   switch (e[0]) {
@@ -72,7 +92,7 @@ function handleEv(e) {
       tk.charAll(); tk.turretFly = { vel: [e[5], e[6], e[7]], w: [e[8], e[9], e[10]], rest: false }; tk.turretOff = true;
       const p = [0, 0, 0]; for (const v of tk.GT.list) { if (!tk.GT.mat[v]) continue; gCenter(tk.GT, v, p); if (p[2] < tk.TK.ringZ) tk.removeVox(tk.GT, v); }
       V.fireball(c, 2.6, true); st.shake = Math.max(st.shake, distTo(c) < 60 ? 1.2 : 0.3);
-      for (let i = 0; i < 260; i++) { const a = Math.random() * Math.PI * 2, u = Math.random(); V.particles.push({ k: 3, x: c[0], y: c[1], z: c[2] + 0.4, vx: Math.cos(a) * u * 7, vy: Math.sin(a) * u * 7, vz: 4 + Math.random() * 12, life: 5 + Math.random() * 8, col: Math.random() < 0.5 ? [60, 62, 64] : [40, 36, 32], sz: 1 }); }
+      for (let i = 0; i < 260; i++) { const a = Math.random() * Math.PI * 2, u = Math.random(); V.particles.push({ k: 3, x: c[0], y: c[1], z: c[2] + 0.4, vx: Math.cos(a) * u * 7, vy: Math.sin(a) * u * 7, vz: 4 + Math.random() * 12, life: 5 + Math.random() * 8, col: Math.random() < 0.5 ? [60, 62, 64] : [40, 36, 32], sz: 1, keep: Math.random() < 0.35 }); }
       AUDIO.boom(distTo(c), true); RENDER.stampScorch(T, ct.x, ct.y, 5); break; }
     case 'rs': { const ct = tankOf(e[1]); if (ct) ct.tk.restoreTrack(e[2]); break; }
     case 'md': { const ct = tankOf(e[1]); if (ct) ct.tk.setDead(e[2]); break; }
@@ -80,28 +100,25 @@ function handleEv(e) {
       st.shells.set(sid, { pos: [x, y, z], prev: [x, y, z], vel: [vx, vy, vz], t: 0, kind, from: eid });
       V.muzzle([x, y, z], [vx / sp, vy / sp, vz / sp]); AUDIO.cannon(distTo([x, y])); if (eid === st.myEnt) st.shake = Math.max(st.shake, 0.35); break; }
     case 'sh': { const s = st.shells.get(e[1]); if (s) { s.end = [e[2], e[3], e[4]]; s.endT = 0.06; } break; }
-    case 'cr': RENDER.stampCrater(T, e[1], e[2], e[3]); AUDIO.thud(distTo([e[1], e[2]])); break;
-    case 'pr': { const pr = M.props[e[1]]; if (!pr) break; const P = [0, 0, 0]; let n = 0;
-      for (const idx of e[2]) { if (!pr.mat[idx]) continue; MAPGEN.propCenter(pr, idx, P); const col = [pr.cr[idx], pr.cg[idx], pr.cb[idx]];
-        if (e[3]) { RENDER.paint(T, P[0] + (Math.random() - .5) * 0.6, P[1] + (Math.random() - .5) * 0.6, col.map(v => v * 0.8), 0.7); if (Math.random() < 0.08) V.chunk(P.slice(), col, 0.6, 2.5); }
-        else if (n++ < 40 || Math.random() < 0.15) V.chunk(P.slice(), col, 1.2, 2.5);
-        pr.mat[idx] = 0; }
-      if (e[3] && Math.random() < 0.3) AUDIO.crunch(distTo(P));
-      RENDER.shadeProp(pr); RENDER.reshadow(T, pr); break; }
-    case 'pd': { const pr = M.props[e[1]]; if (!pr || pr.gone) break; const P = [0, 0, 0], dx = e[2], dy = e[3], L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L;
-      for (let a = 0; a < pr.list.length; a++) { const idx = pr.list[a]; if (!pr.mat[idx]) continue; MAPGEN.propCenter(pr, idx, P); const col = [pr.cr[idx], pr.cg[idx], pr.cb[idx]];
-        // a árvore deita na direção do empurrão: cada voxel cai a uma distância igual à sua altura
-        const fx = pr.cx + ux * P[2] + (P[0] - pr.cx) * 0.8, fy = pr.cy + uy * P[2] + (P[1] - pr.cy) * 0.8;
-        if ((a & 1) === 0) RENDER.paint(T, fx, fy, col.map(v => v * 0.85), pr.mat[idx] === 2 ? 0.9 : 0.55);
-        if (a % 9 === 0) V.particles.push({ k: 3, x: P[0], y: P[1], z: P[2], vx: ux * P[2] * 0.9 + (Math.random() - .5), vy: uy * P[2] * 0.9 + (Math.random() - .5), vz: 0.5, life: 1.2 + Math.random(), col, sz: 2.5 });
-        pr.mat[idx] = 0; }
-      pr.gone = true; V.dust([pr.cx + ux * 3, pr.cy + uy * 3, 0.3], 14, [110, 120, 80]); AUDIO.crunch(distTo([pr.cx, pr.cy])); RENDER.reshadow(T, pr); break; }
-    case 'pc': { const pr = M.props[e[1]]; if (!pr) break; pr.collapsed = true; const P = [0, 0, 0];
-      for (let a = 0; a < pr.list.length; a++) { const idx = pr.list[a]; if (!pr.mat[idx]) continue; MAPGEN.propCenter(pr, idx, P); if (P[2] <= 1.1) continue; const col = [pr.cr[idx], pr.cg[idx], pr.cb[idx]];
-        RENDER.paint(T, P[0] + (Math.random() - .5) * 2.5, P[1] + (Math.random() - .5) * 2.5, col.map(v => v * 0.8), 0.6);
-        if (a % 14 === 0) V.chunk(P.slice(), col, 1.4, 2.5); pr.mat[idx] = 0; }
-      for (let i = 0; i < 6; i++) V.dust([pr.cx + (Math.random() - .5) * 6, pr.cy + (Math.random() - .5) * 6, 0.5], 12, [150, 140, 120]);
-      AUDIO.boom(distTo([pr.cx, pr.cy]), false); RENDER.shadeProp(pr); RENDER.reshadow(T, pr); break; }
+    case 'cr': { RENDER.stampCrater(T, e[1], e[2], e[3]); AUDIO.thud(distTo([e[1], e[2]]));
+      // cratera de explosão: terra revirada em volta, em voxels
+      if (e[4]) { const pr = MAPGEN.addVisual(M, MAPGEN.craterRim(e[1], e[2], e[3], (e[1] * 97 + e[2] * 31) | 0)); RENDER.prepProp(pr);
+        for (let i = 0; i < 24; i++) { const a = Math.random() * Math.PI * 2, d = e[3] * (0.6 + Math.random() * 0.8); V.chunk([e[1] + Math.cos(a) * 0.3, e[2] + Math.sin(a) * 0.3, 0.3], [96 + Math.random() * 30, 80 + Math.random() * 20, 58], 1.6, 1.5, true); } }
+      break; }
+    case 'pt': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.tunnel(pr, e[2], e[3]); propBits(pr, rem, 1.1, 0.06); markDirty(pr); break; }
+    case 'pq': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.crushBox(pr, e[2], e[3], e[4], e[5], e[6], e[7], 2.6); const P = [0, 0, 0];
+      for (let i = 0; i < rem.length; i += 3) { const idx = rem[i]; MAPGEN.propCenter(pr, idx, P); RENDER.paint(T, P[0] + (Math.random() - .5) * 0.4, P[1] + (Math.random() - .5) * 0.4, [pr.cr[idx] * 0.8, pr.cg[idx] * 0.8, pr.cb[idx] * 0.8], 0.5); }
+      propBits(pr, rem, 0.5, 0.04); if (rem.length && Math.random() < 0.25) AUDIO.crunch(distTo([e[2], e[3]])); markDirty(pr); break; }
+    case 'pd': { const pr = M.props[e[1]]; if (!pr || pr.fallen) break; startFall(pr, e[2]); MAPGEN.fell(M, pr, e[2]); RENDER.prepProp(pr); pr.dirty = false; RENDER.reshadow(T, pr);
+      AUDIO.crunch(distTo([pr.cx, pr.cy])); break; }
+    case 'pc': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.collapse(pr); propBits(pr, rem, 1.6, 0.03, true);
+      for (let i = 0; i < 10; i++) V.dust([pr.cx + (Math.random() - .5) * 7, pr.cy + (Math.random() - .5) * 6, 0.6 + Math.random()], 14, [150, 140, 120]);
+      AUDIO.boom(distTo([pr.cx, pr.cy]), false); st.shake = Math.max(st.shake, distTo([pr.cx, pr.cy]) < 40 ? 0.4 : 0); RENDER.prepProp(pr); pr.dirty = false; RENDER.reshadow(T, pr); break; }
+    case 'pi': { const pr = M.props[e[1]]; if (!pr) break; pr.fire = { x: e[2], y: e[3], z: e[4], r: 0.5, pts: [] }; V.fireball([e[2], e[3], e[4]], 0.3, false); firePoints(pr); break; }
+    case 'pb': { const pr = M.props[e[1]]; if (!pr) break; const rem = MAPGEN.burn(pr, e[2], e[3], e[4], e[5], e[6]);
+      if (!pr.fire) pr.fire = { x: e[2], y: e[3], z: e[4], r: e[5], pts: [] }; pr.fire.r = e[5]; char(pr, e[2], e[3], e[4], e[5] + 0.4);
+      propBits(pr, rem, 0.6, 0.02); markDirty(pr); firePoints(pr); break; }
+    case 'pf': { const pr = M.props[e[1]]; if (pr) pr.fire = null; break; }
     case 'hi': { const [, sh, tg, res, plate, eff, pen, crew, mods, aname] = e;
       const p = tankOf(tg); if (p) AUDIO.hit(distTo([p.x, p.y]), res === 'pen');
       const RES = { pen: 'PENETROU', non: 'NÃO PENETROU', ric: 'RICOCHETE' };
@@ -200,6 +217,7 @@ function frame(nowMs) {
   // calor das placas atingidas esfria
   for (const key of st.heat) { const [id, gid, i] = key.split(',').map(Number); const ct = tankOf(id); if (!ct) { st.heat.delete(key); continue; } const g = ct.tk.grid(gid); g.heat[i] -= dt * 0.35; if (g.heat[i] <= 0) { g.heat[i] = 0; st.heat.delete(key); } }
   V.updParticles(dt);
+  propFires(dt);
   // ---- desenho
   V.ground(st.T);
   if (st.g && st.mode === 'dom') { const z = st.M.zone, o = st.g.z[1]; const col = o === 0 ? [214, 164, 64] : o === 1 ? [111, 168, 220] : [230, 230, 220]; V.groundRing(z.x, z.y, z.r, col, 0.75); V.groundRing(z.x, z.y, z.r - 0.4, col, 0.35); }
@@ -207,7 +225,11 @@ function frame(nowMs) {
   for (const ct of st.tanks.values()) { const show = ct.vis || ct.id === st.myEnt || (ct.f & 1); if (!show || !V.tankOnScreen(ct.tk)) continue; drawn.push(ct); }
   for (const ct of drawn) { V.shadowGrid(ct.tk.GH, ct.tk.TH); V.shadowGrid(ct.tk.GT, ct.tk.TT); }
   V.applyShadow();
-  for (const pr of st.M.props) if (!pr.gone) V.splatProp(pr, 512 + pr.id);
+  for (const pr of st.dirty) { RENDER.refreshProp(pr); RENDER.reshadow(st.T, pr); pr.dirty = false; if (pr.fire) firePoints(pr); } st.dirty.length = 0;
+  for (const pr of st.M.props) if (!pr.gone) { const fl = pr.falling; if (!fl) V.splatProp(pr, 512 + pr.id); }
+  for (let i = st.falling.length - 1; i >= 0; i--) { const f = st.falling[i]; f.t += dt; const u = Math.min(1, f.t / f.dur); f.pr.falling = u < 1;
+    if (u < 1) V.splatFalling(f, 0, u); else { st.falling.splice(i, 1); V.dust([f.cx + f.ux * 4, f.cy + f.uy * 4, 0.3], 20, [110, 120, 80]); AUDIO.thud(distTo([f.cx, f.cy])); } }
+  V.drawLitter();
   for (const ct of drawn) V.splatTank(ct.tk, ct.ci, ct.id === st.myEnt && st.zoom > 20 * V.GBcss ? 'cut' : 'ext');
   V.outline();
   drawAntennas(drawn);
@@ -245,6 +267,12 @@ function fireFx(ct, dt) {
   if ((f & 1) && !comps.length && ct.deadAt !== undefined) { const age = performance.now() / 1000 - ct.deadAt, rate = age < 120 ? 10 : 3;
     if (Math.random() < dt * rate) { const v = toW(tk.TH, [TK.ring[0] + (Math.random() - .5), TK.ring[1] + (Math.random() - .5), TK.ringZ], [0, 0, 0]); V.particles.push({ k: 2, x: v[0], y: v[1], z: v[2], vx: 0, vy: 0, vz: 0.9, life: 5, max: 5, r0: 0.2, r1: 1.4, col: [44, 42, 40] }); } }
 }
+function propFires(dt) { const V = st.view;
+  for (const pr of st.M.props) { const f = pr.fire; if (!f || !f.pts.length) continue; const n = f.pts.length / 3; let k = Math.min(60, n * 0.6) * dt * 6;
+    while (k > 0) { if (k < 1 && Math.random() > k) break; k--; const q = ((Math.random() * n) | 0) * 3, x = f.pts[q], y = f.pts[q + 1], z = f.pts[q + 2];
+      V.particles.push({ k: 1, x: x + (Math.random() - .5) * 0.2, y: y + (Math.random() - .5) * 0.2, z, vx: (Math.random() - .5) * 0.5, vy: (Math.random() - .5) * 0.5, vz: 1.2 + Math.random() * 2.4, life: 0.4 + Math.random() * 0.8, max: 1.1, drag: 1.1 });
+      if (Math.random() < 0.12) V.particles.push({ k: 2, x, y, z: z + 0.4, vx: (Math.random() - .5) * 0.4, vy: (Math.random() - .5) * 0.4, vz: 1.3 + Math.random(), life: 4 + Math.random() * 3, max: 7, r0: 0.25, r1: 1.5, col: [60, 58, 56] });
+      if (Math.random() < 0.05) V.particles.push({ k: 0, x, y, z, vx: (Math.random() - .5) * 2, vy: (Math.random() - .5) * 2, vz: 2 + Math.random() * 3, life: 0.8 + Math.random(), max: 1.6 }); } } }
 function drawAntennas(list) { const V = st.view, P = [0, 0, 0], Q = [0, 0, 0];
   for (const ct of list) { const tk = ct.tk, an = tk.TK.antenna; if ((ct.f & 1) && an.on === 'h') continue; if (tk.turretOff && an.on === 't') continue; const T = an.on === 'h' ? tk.TH : tk.TT;
     V.proj(...toW(T, an.a, [0, 0, 0]), P); V.proj(...toW(T, an.b, [0, 0, 0]), Q); V.line(P[0], P[1], Q[0], Q[1], 28, 30, 32, 0.9, false); } }
