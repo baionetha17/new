@@ -34,6 +34,7 @@ function onSnap(m) {
   if (!st) return;
   const now = performance.now() / 1000;
   const off = m.T - now; st.offset = st.offset === null ? off : Math.max(off, st.offset + (off - st.offset) * 0.02);
+  { const o = DIAG.cur(); o.snap++; o.late = Math.max(o.late, (st.offset - off) * 1000); for (const e of m.ev) if (e[0] === 'mg') o.rx++; }
   for (const e of m.ev) handleEv(e);
   const seen = new Set();
   for (const k of m.k) { const ct = st.tanks.get(k[0]); if (!ct) continue; seen.add(k[0]);
@@ -44,7 +45,7 @@ function onSnap(m) {
     ct.f = k[6]; st.seenAt.set(ct.id, now); }
   for (const ct of st.tanks.values()) if (!seen.has(ct.id)) ct.vis = false;
   st.g = m.g; st.lastSnap = now;
-  if (m.me) { const prev = st.me; st.me = m.me; st.myEnt = m.me.id;
+  if (m.me) { const prev = st.me; st.me = m.me; st.myEnt = m.me.id; if (m.me.mg && m.me.mg[0]) DIAG.cur().belt = m.me.mg[0][0];
     if (prev && prev.loaded === null && m.me.loaded !== null) AUDIO.reload();
     st.reloadLocal = m.me.reload; if (prev && prev.id !== m.me.id) { st.camOff = [0, 0]; } }
 }
@@ -172,6 +173,7 @@ function handleEv(e) {
   }
 }
 function mgShot(e) { const a = [e[3], e[4], e[5]], b = [e[6], e[7], e[8]], L = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) || 0.1, ct = st.tanks.get(e[1]), M2 = ct && ct.tk.game.mg;
+  DIAG.cur().play++;
   st.bullets.push({ a, b, L, t: 0, T: Math.max(0.07, L / (M2 ? M2.v : 800)), hit: e[9], tr: (st.mgN = (st.mgN || 0) + 1) % 3 === 0, de: ct && ct.tk.game.flag === 'de' });
   if (Math.random() < 0.5) st.view.particles.push({ k: 4, x: a[0], y: a[1], z: a[2], life: 0.05, max: 0.05, r: 0.35 });
   if (Math.random() < 0.6) st.view.chunk([a[0] - (b[0] - a[0]) / L * 0.6, a[1] - (b[1] - a[1]) / L * 0.6, a[2] - 0.1], [206, 164, 72], 0.5, 0.35, Math.random() < 0.2);   // cartucho
@@ -182,11 +184,31 @@ function feed(text, cls) { const el = document.createElement('div'); el.classNam
 let centerT = 0;
 function showCenter(text, dur) { const el = $('#centerMsg'); el.textContent = text; el.hidden = false; centerT = dur || 2.5; }
 
+// ================================================================ diagnóstico (F8 mostra, F9 copia)
+// grava 15 s em fatias de 100 ms: Espaço, input enviado, pacotes, tiros recebidos/tocados, atraso e travadas do quadro
+const DIAG = { on: false, b: new Map(), el: null,
+  cur() { const k = Math.floor(performance.now() / 100); let o = this.b.get(k);
+    if (!o) { o = { sp: 0, mg: 0, snap: 0, rx: 0, play: 0, late: 0, fr: 0, frMax: 0, q: 0, belt: -1 }; this.b.set(k, o); for (const kk of this.b.keys()) { if (kk < k - 150) this.b.delete(kk); else break; } }
+    return o; },
+  text() { const ks = [...this.b.keys()], k0 = ks[0] || 0;
+    let t = 'diag metralhadora (100 ms por linha) ' + navigator.userAgent + '\nt(s)  esp env pac rx toc fila atraso(ms) quadroMax(ms) fita\n';
+    for (const k of ks) { const o = this.b.get(k); t += ((k - k0) / 10).toFixed(1).padStart(5) + '   ' + o.sp + '   ' + o.mg + '  ' + String(o.snap).padStart(2) + ' ' + String(o.rx).padStart(2) + ' ' + String(o.play).padStart(2) + ' ' + String(o.q).padStart(4) + ' ' + String(Math.round(o.late)).padStart(6) + ' ' + String(Math.round(o.frMax)).padStart(8) + '   ' + o.belt + '\n'; }
+    return t; },
+  draw() { if (!this.on) { if (this.el) this.el.hidden = true; return; }
+    if (!this.el) { this.el = document.createElement('pre'); this.el.className = 'diag'; document.body.appendChild(this.el); }
+    this.el.hidden = false; const k = Math.floor(performance.now() / 100), sum = { sp: 0, mg: 0, snap: 0, rx: 0, play: 0, late: 0, frMax: 0, q: 0 };
+    for (let i = k - 10; i < k; i++) { const o = this.b.get(i); if (!o) continue; for (const f of ['sp', 'mg', 'snap', 'rx', 'play']) sum[f] += o[f]; sum.late = Math.max(sum.late, o.late); sum.frMax = Math.max(sum.frMax, o.frMax); sum.q = Math.max(sum.q, o.q); }
+    this.el.textContent = 'DIAGNÓSTICO (último 1 s)  F9 copia os últimos 15 s\nEspaço segurado: ' + (st && st.keys[' '] ? 'SIM' : 'não') + '\ninputs com tiro: ' + sum.mg + '/' + sum.sp + '\npacotes: ' + sum.snap + '\ntiros recebidos: ' + sum.rx + '  tocados: ' + sum.play + '  fila: ' + sum.q + '\natraso máx: ' + Math.round(sum.late) + ' ms  quadro mais lento: ' + Math.round(sum.frMax) + ' ms'; },
+  copy() { const t = this.text(); try { navigator.clipboard.writeText(t).then(() => toastDiag('Diagnóstico copiado. Cole na conversa.'), () => toastDiag('Não deu para copiar.')); } catch (e) { toastDiag('Não deu para copiar.'); } } };
+function toastDiag(m) { const f = $('#feed'); if (!f) return; const d = document.createElement('div'); d.textContent = m; f.prepend(d); setTimeout(() => d.remove(), 5000); }
+
 // ================================================================ entrada
 const handlers = {};
 function bindInput(cv) {
   handlers.kd = e => { if (!st) return; if (e.target.tagName === 'INPUT') return; const k = e.key.toLowerCase(); AUDIO.init();
     if (k === 'escape') { togglePause(); e.preventDefault(); return; }
+    if (k === 'f8') { DIAG.on = !DIAG.on; e.preventDefault(); return; }
+    if (k === 'f9') { DIAG.copy(); e.preventDefault(); return; }
     if (st.paused) return;
     st.keys[k] = true;
     if (e.repeat) { if (k === ' ' || k === 'g' || k === 'r' || k.startsWith('arrow')) e.preventDefault(); return; }
@@ -219,6 +241,7 @@ function zoomLimits() { const V = st.view; return [Math.max(0.7 * V.GBcss, Math.
 function zoom(f) { const [a, b] = zoomLimits(); st.zoom = clamp(st.zoom * f, a, b); }
 function sendInput() { if (!st || !net) return; const k = st.keys, p = st.paused;
   const thr = p ? 0 : (k.w || k.arrowup ? 1 : 0) - (k.s || k.arrowdown ? 1 : 0), steer = p ? 0 : (k.a || k.arrowleft ? 1 : 0) - (k.d || k.arrowright ? 1 : 0);
+  { const o = DIAG.cur(); if (k[' ']) o.sp++; if (!p && k[' ']) o.mg++; }
   net({ t: 'input', thr, steer, aim: st.aim.map(v => Math.round(v * 100) / 100), fire: st.fireN, sel: st.sel, rep: st.repN, smk: st.smkN, mg: !p && k[' '] ? 1 : 0 }); }
 function togglePause(force) { st.paused = force !== undefined ? force : !st.paused; $('#pause').hidden = !st.paused; }
 function cycleSpec() { const me = myTank(); if (me && !(me.f & 1)) { st.spec = null; return; }
@@ -230,6 +253,7 @@ function quit() { net({ t: 'quit' }); const fn = onExit; stop(); if (fn) fn(); }
 function frame(nowMs) {
   if (!st) return; raf = requestAnimationFrame(frame);
   const rdt = Math.min(0.5, Math.max(0, (nowMs - st.last) / 1000)), dt = Math.min(0.05, rdt); st.last = nowMs;
+  { const o = DIAG.cur(); o.frMax = Math.max(o.frMax, rdt * 1000); o.q = Math.max(o.q, st.mgQ.length); DIAG.draw(); }
   const V = st.view; V.resize();
   { const [zmin, zmax] = zoomLimits(); st.zoom = clamp(st.zoom, zmin, zmax);
     // voxel com menos de ~4 pixels na tela: desenha em 1x1 para não borrar; maior que isso, volta ao pixel do chão
@@ -572,5 +596,5 @@ function minimap() { const c = $('#minimap'), x = c.getContext('2d'), N = c.widt
     x.save(); x.translate(a, b); x.rotate(-ct.h); x.fillStyle = ct.id === st.myEnt ? '#ffffff' : ct.team === st.team ? '#8fd18f' : '#ff6b4f';
     x.beginPath(); x.moveTo(6, 0); x.lineTo(-4, -4); x.lineTo(-2, 0); x.lineTo(-4, 4); x.closePath(); x.fill(); x.restore(); } }
 
-return { start, stop, onSnap, quit, togglePause, get active() { return !!st; }, get state() { return st; } };
+return { start, stop, onSnap, quit, togglePause, get active() { return !!st; }, get state() { return st; }, diag: DIAG };
 })();
