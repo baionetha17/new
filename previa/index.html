@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tanque X1</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Stencil+One&family=Barlow+Condensed:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============================================================ menu -->
+<section id="scr-menu" class="screen">
+  <div class="menu">
+    <div class="menu-left">
+      <h1 class="logo">TANQUE X1</h1>
+      <p class="tag">Panzer IV contra Sherman. Blindagem real, ângulo real, tripulação de verdade.</p>
+      <div class="field"><label for="name">Seu nome</label><input id="name" maxlength="16" autocomplete="off" placeholder="Tanquista"></div>
+      <button id="btnCreate" class="primary big">Criar sala</button>
+      <div class="join"><input id="code" maxlength="4" placeholder="CÓDIGO" autocomplete="off"><button id="btnJoin">Entrar na sala</button></div>
+      <p class="note">Quem cria a sala hospeda a partida no próprio navegador. Passe o código de 4 letras ou o convite para os amigos. Deixe esta aba aberta enquanto jogam.</p>
+      <div class="row-btns"><button id="btnHelp">Como jogar</button></div>
+    </div>
+    <div class="menu-right"><canvas id="menuCanvas" aria-label="Tanque girando"></canvas><div class="menu-cap" id="menuCap"></div></div>
+  </div>
+</section>
+
+<!-- ============================================================ sala -->
+<section id="scr-room" class="screen" hidden>
+  <header class="bar">
+    <div><span class="kicker">Sala</span> <b id="roomCode" class="code"></b> <button id="btnCopy" class="small">Copiar convite</button></div>
+    <div id="roomBusy" class="busy" hidden>Partida em andamento. Você entra na próxima.</div>
+    <button id="btnLeave" class="small">Sair da sala</button>
+  </header>
+  <div class="room">
+    <aside class="settings">
+      <h2>Partida</h2>
+      <div class="field"><label for="setMode">Modo</label><select id="setMode"><option value="dm">Mata-mata (uma vida)</option><option value="dom">Dominação (zona no meio)</option><option value="tdm">Mata-mata infinito (renasce)</option></select></div>
+      <p class="note" id="modeNote"></p>
+      <div class="field"><label for="setMap">Mapa</label><select id="setMap"><option value="kursk">Prokhorovka, Kursk (1943)</option><option value="normandia">Bocage da Normandia (1944)</option></select></div>
+      <div class="field"><label for="setSeed">Semente do mapa</label><div class="inline"><input id="setSeed" type="number" min="1"><button id="btnSeed" class="small" title="Sortear outra">Sortear</button></div></div>
+      <div class="field"><label for="setTime">Tempo máximo</label><select id="setTime"><option value="5">5 minutos</option><option value="10">10 minutos</option><option value="15">15 minutos</option></select></div>
+      <div class="field" id="killsField"><label for="setKills">Abates para vencer</label><select id="setKills"><option>5</option><option>10</option><option>15</option><option>20</option></select></div>
+      <p class="note" id="hostNote"></p>
+    </aside>
+    <div class="teams">
+      <div class="team t0"><h2>Time A</h2><div class="tanks" id="team0"></div><div class="tbtns"><button data-add="0">+ Meu tanque aqui</button><button data-bot="0" class="hostonly">+ IA</button></div></div>
+      <div class="team t1"><h2>Time B</h2><div class="tanks" id="team1"></div><div class="tbtns"><button data-add="1">+ Meu tanque aqui</button><button data-bot="1" class="hostonly">+ IA</button></div></div>
+      <p class="note span2">Cada tanque leva um ou dois jogadores. Com dois, um fica na <b>motora</b> (dirige com W A S D) e o outro na <b>torre</b> (mira, atira e escolhe a munição). Sozinho, você faz as duas coisas.</p>
+    </div>
+    <aside class="players">
+      <h2>Jogadores</h2>
+      <div id="playerList"></div>
+      <button id="btnReady" class="big">Estou pronto</button>
+      <button id="btnStart" class="primary big hostonly">Começar partida</button>
+      <p class="note" id="startNote"></p>
+    </aside>
+  </div>
+</section>
+
+<!-- ============================================================ tanque e munição -->
+<section id="scr-load" class="screen" hidden>
+  <header class="bar">
+    <div><span class="kicker">Tanque e munição</span> <b id="loadTitle"></b></div>
+    <button id="btnLoadBack" class="primary small">Salvar e voltar para a sala</button>
+  </header>
+  <div class="load">
+    <div class="pickcol">
+      <div class="tankpick" id="tankPick"></div>
+      <div class="preview"><canvas id="prevCanvas" aria-label="Prévia do tanque"></canvas>
+        <div class="seg" id="prevSeg"><button data-pv="ext" aria-pressed="true">Por fora</button><button data-pv="cut" aria-pressed="false">Por dentro</button></div>
+        <div class="legend" id="prevLegend" hidden></div></div>
+    </div>
+    <div class="infocol">
+      <div id="tankStats" class="stats"></div>
+      <h2>Munição</h2>
+      <p class="note">Escolha quantos tiros de cada tipo levar. Racks vazios não explodem, então levar menos munição é mais seguro.</p>
+      <div id="ammoRows"></div>
+      <div class="ammo-foot"><div id="ammoTotal" class="total"></div><div class="row-btns"><button id="ammoDef" class="small">Padrão</button><button id="ammoMax" class="small">Encher com perfurante</button><button id="ammoHalf" class="small">Meia carga</button></div></div>
+      <details class="ficha"><summary>Ficha técnica</summary><div id="fichaBody"></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ partida -->
+<section id="scr-game" class="screen game" hidden>
+  <canvas id="gameCanvas"></canvas>
+  <div class="hud top"><div id="hudMode" class="hmode"></div><div id="hudTime" class="htime">10:00</div><div id="hudScore" class="hscore"></div>
+    <div id="zoneBar" class="zone" hidden><i></i><span></span></div></div>
+  <canvas id="minimap" width="200" height="200"></canvas>
+  <div id="feed" class="feed"></div>
+  <div class="hud left">
+    <div id="hudTank" class="htank"></div>
+    <div class="lbl">Tripulação</div><div id="crew" class="crew"></div>
+    <div class="lbl">Módulos</div><div id="mods" class="mods"></div>
+  </div>
+  <div class="hud bottom">
+    <div id="ammo" class="ammobar"></div>
+    <div id="reload" class="reload"><i></i><span></span></div>
+    <div id="speed" class="speed"></div>
+    <div id="repair" class="repair" hidden><div class="pbar"><i></i></div><span></span></div>
+  </div>
+  <div id="analysis" class="analysis" hidden></div>
+  <div id="centerMsg" class="center" hidden></div>
+  <div id="deadBox" class="deadbox" hidden></div>
+  <div class="hint">W A S D dirige · mouse gira a torre · clique atira · botão direito leva a câmera · 1–5 munição · R conserta e apaga fogo · roda zoom · Esc menu</div>
+  <div id="pause" class="overlay" hidden><div class="panel">
+    <h2>Pausa</h2><p class="note">A partida continua rodando para os outros.</p>
+    <button id="btnResume" class="primary big">Continuar</button>
+    <div class="field"><label for="vol">Volume</label><input id="vol" type="range" min="0" max="1" step="0.05"></div>
+    <button id="btnQuit" class="big">Sair da partida</button>
+  </div></div>
+</section>
+
+<!-- ============================================================ placar -->
+<section id="scr-score" class="screen" hidden>
+  <div class="score">
+    <h1 id="scoreTitle" class="result"></h1>
+    <p id="scoreSub" class="tag"></p>
+    <div class="tw"><table id="scoreTable"></table></div>
+    <div class="row-btns center"><button id="btnScoreRoom" class="primary big">Voltar para a sala</button><button id="btnScoreMenu" class="big">Sair para o menu</button></div>
+  </div>
+</section>
+
+<!-- ============================================================ como jogar -->
+<section id="scr-help" class="screen" hidden>
+  <div class="help">
+    <h1 class="logo small">Como jogar</h1>
+    <div class="helpgrid">
+      <div>
+        <h2>Controles</h2>
+        <table>
+          <tr><td>Dirigir</td><td><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></td></tr>
+          <tr><td>Girar a torre</td><td>Mouse (a torre vai até onde o mouse está, na velocidade real dela)</td></tr>
+          <tr><td>Atirar</td><td>Botão esquerdo</td></tr>
+          <tr><td>Mirar longe</td><td>Segure o botão direito: a câmera vai até o mouse</td></tr>
+          <tr><td>Trocar munição</td><td><kbd>1</kbd> a <kbd>5</kbd> (troca o tiro carregado se ainda houver do novo tipo)</td></tr>
+          <tr><td>Consertar e apagar fogo</td><td><kbd>R</kbd> (consertar exige o tanque parado)</td></tr>
+          <tr><td>Zoom</td><td>Roda do mouse. Bem de perto você vê a tripulação e os módulos do seu tanque</td></tr>
+          <tr><td>Câmera de aliado</td><td><kbd>Espaço</kbd> depois de ser destruído</td></tr>
+          <tr><td>Menu</td><td><kbd>Esc</kbd></td></tr>
+        </table>
+        <h2>Dois no mesmo tanque</h2>
+        <p>Na sala, um entra na <b>motora</b> e o outro na <b>torre</b>. O motorista dirige; o artilheiro mira, atira e escolhe a munição. Qualquer um conserta.</p>
+      </div>
+      <div>
+        <h2>Blindagem e tiro</h2>
+        <p>O tiro penetra quando a penetração da munição naquela distância passa a blindagem efetiva da placa: espessura dividida pelo cosseno do ângulo. Deixar o tanque de lado em relação ao inimigo funciona de verdade, mas não exagere, porque a lateral é fina.</p>
+        <p>Passe o mouse sobre o inimigo: a caixa mostra a placa, o ângulo, a blindagem efetiva e se a sua munição atual penetra ali.</p>
+        <p>O projétil tem velocidade real e cai com a distância. A torre leva tempo para girar: o círculo pequeno mostra para onde o canhão aponta agora.</p>
+        <h2>Dano</h2>
+        <p>Depois de penetrar, o projétil e os estilhaços atravessam o tanque e acertam o que estiver no caminho. Munição atingida pode explodir e mandar a torre longe. Combustível pega fogo. Esteira quebrada faz o tanque só girar. Quando um tripulante morre, outro assume o posto depois de alguns segundos. Sem tripulação, o tanque morre e vira destroço que serve de cobertura.</p>
+        <p>Você só vê o inimigo quando ele está na linha de visão. Árvores e casas escondem; o comandante enxerga mais longe. Quem atira se revela por alguns segundos.</p>
+      </div>
+    </div>
+    <div class="row-btns center"><button id="btnHelpBack" class="primary big">Voltar</button></div>
+  </div>
+</section>
+
+<div id="loading" class="overlay" hidden><div class="panel"><h2>Montando o campo de batalha…</h2></div></div>
+<div id="conn" class="overlay" hidden><div class="panel"><h2>A conexão com a sala caiu</h2><p class="note">Quem hospeda fechou a aba, saiu da sala ou a internet oscilou. Peça o código de novo e entre outra vez.</p><button id="btnReconnect" class="primary big">Voltar ao menu</button></div></div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="vendor/peerjs.min.js"></script>
+<script src="shared/sim.js"></script>
+<script src="shared/map.js"></script>
+<script src="render.js"></script>
+<script src="audio.js"></script>
+<script src="game.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>
